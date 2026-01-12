@@ -20,7 +20,7 @@ This repo is a **hands-free Gentoo installer** meant to be run from a Gentoo liv
 
 ```bash
 git clone https://github.com/MiyaSHs/virtual-insanity
-cd golden-master
+cd virtual-insanity
 bash install.sh
 ```
 
