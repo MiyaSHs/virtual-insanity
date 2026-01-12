@@ -9,7 +9,7 @@ This repo installs a Gentoo system from a live USB with:
 - a "Re-optimize" desktop launcher (Plasma only)
 
 ## Run
-From Gentoo live USB (root):
+From Gentoo live USB (root, after connecting to wifi):
 ```bash
 git clone https://github.com/YOU/golden-master.git
 cd golden-master
