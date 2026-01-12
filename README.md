@@ -19,7 +19,7 @@ This repo is a **hands-free Gentoo installer** meant to be run from a Gentoo liv
 ## Quick start (from live USB)
 
 ```bash
-git clone https://github.com/<you>/golden-master.git
+git clone https://github.com/MiyaSHs/virtual-insanity
 cd golden-master
 bash install.sh
 ```
