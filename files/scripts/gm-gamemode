@@ -32,4 +32,10 @@ export MOZ_ENABLE_WAYLAND=1
 export STEAM_FORCE_DESKTOPUI_SCALING="${STEAM_FORCE_DESKTOPUI_SCALING:-1}"
 
 log "Starting Steam Gamepad UI…"
-exec dbus-run-session -- gamescope ${GS_ARGS} -- steam -gamepadui
+if command -v powerprofilesctl >/dev/null 2>&1; then
+  # Hold performance profile during Game Mode session (if available)
+  exec powerprofilesctl launch --profile performance --reason "Game Mode" --appid "golden-master.gamemode" -- \
+    dbus-run-session -- gamescope ${GS_ARGS} -- steam -gamepadui
+else
+  exec dbus-run-session -- gamescope ${GS_ARGS} -- steam -gamepadui
+fi

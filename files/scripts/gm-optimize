@@ -6,6 +6,7 @@ log() { echo "[gm-optimize] $*"; }
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   echo "Run as root (sudo gm-optimize)" >&2
   exit 1
+fi
 
 # Optional: pin @gm-fdo-targets so `emerge --depclean` won’t remove “leaf” targets.
 # Enable by setting GM_PIN_TARGETS=1 in your environment or a config file.
@@ -17,11 +18,11 @@ if [[ "${GM_PIN_TARGETS:-0}" == "1" ]]; then
   log "Pinned @gm-fdo-targets in ${WORLD_SETS}"
 fi
 
-fi
-
 /usr/local/bin/gm-fdo-accumulate || true
 /usr/local/bin/gm-portage-env-apply || true
-/usr/local/bin/gm-java-tune || true
+if command -v gm-java-tune >/dev/null 2>&1; then
+  gm-java-tune || true
+fi
 
 if [[ -f /etc/portage/sets/gm-fdo-targets ]]; then
   if grep -q . /etc/portage/sets/gm-fdo-targets; then

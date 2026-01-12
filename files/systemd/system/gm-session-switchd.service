@@ -1,0 +1,12 @@
+[Unit]
+Description=Golden Master session switcher (SDDM)
+After=multi-user.target
+ConditionPathExists=/run/gm/next-session
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/golden-master
+ExecStart=/usr/local/sbin/gm-session-switchd
+
+[Install]
+WantedBy=multi-user.target

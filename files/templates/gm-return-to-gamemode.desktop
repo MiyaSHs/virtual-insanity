@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Return to Game Mode
+Exec=/usr/local/bin/gm-return-to-gamemode
+Terminal=false
+Categories=System;

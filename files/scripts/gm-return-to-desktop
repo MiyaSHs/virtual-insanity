@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+REQ="/run/gm/next-session"
+if [[ ! -e "$REQ" ]]; then
+  echo "Session switch request file not found ($REQ). Is gm-session-switchd enabled?" >&2
+  exit 1
+fi
+echo "desktop" > "$REQ"
+echo "Requested Desktop session. You will be logged out and auto-switched."

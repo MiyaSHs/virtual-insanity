@@ -5,72 +5,93 @@ source "$GM_ROOT_DIR/lib/ui.sh"
 source "$GM_ROOT_DIR/lib/hw.sh"
 
 list_disks() {
-  # show non-removable disks (best-effort)
   lsblk -dpno NAME,SIZE,MODEL,TYPE | awk '$4=="disk"{print $1 " (" $2 " " $3 ")"}'
 }
 
-# helper: token-in-string
 has_token() { [[ " ${1:-} " == *" ${2} "* ]]; }
 
 run() {
   log "Collecting install choices…"
 
-  local disk_choice
-  local -a menu=()
-  while read -r line; do
-    [[ -n "$line" ]] || continue
-    local dev="${line%% *}"
-    menu+=("$dev" "$line")
-  done < <(list_disks)
-
-  [[ ${#menu[@]} -gt 0 ]] || die "No disks detected."
-
-  disk_choice=$(ui_menu "Disk" "Select the target disk (WILL BE WIPED)" "${menu[@]}")
-  save_kv GM_DISK "$disk_choice"
-
-  local fs_choice
-  fs_choice=$(ui_menu "Filesystem" "Choose filesystem" \
-    "btrfs" "Btrfs (recommended: snapshots + compression)" \
-    "ext4" "Ext4 (simple, stable)" \
-    "xfs"  "XFS (fast, no compression by default)")
-  save_kv GM_FS "$fs_choice"
-
-  local enc_choice="none"
-  if ui_yesno "Encryption" "Enable root encryption (LUKS2)?" "yes"; then
-    if has_tpm2 && ui_yesno "Encryption" "TPM2 detected. Use TPM2 auto-unlock (no prompt on boot, fallback passphrase kept)?" "yes"; then
-      enc_choice="luks_tpm"
-    else
-      enc_choice="luks_pass"
-    fi
-  fi
-  save_kv GM_ENCRYPTION "$enc_choice"
-
+  # Profile
   local prof
-  prof=$(ui_menu "Profile" "Select base profile" \
-    "gamemode" "Steam + Gamescope at boot (Plasma desktop available)" \
-    "plasma" "Plasma Wayland desktop" \
-    "tty" "Minimal console-only")
+  prof=$(ui_menu "Profile" "Choose the base system profile" \
+    "gamemode" "Handheld Game Mode (Steam+Gamescope + Plasma fallback)" \
+    "plasma"   "Plasma desktop (general use)" \
+    "tty"      "TTY only (server/minimal)") || die "No profile selected."
   save_kv GM_PROFILE "$prof"
 
+  # Components checklist (heavy/optional things)
+  local -a feats=()
+  feats+=("java"     "Install Java (OpenJDK/GraalVM) + runtime tuning helper" "OFF")
+  feats+=("handheld" "Enable HHD handheld support (device-agnostic)" "$( [[ "$prof" == "gamemode" ]] && echo ON || echo OFF )")
+  feats+=("iwd"      "Use iwd backend for Wi-Fi (recommended)" "ON")
+  feats+=("bluetooth" "Enable Bluetooth (BlueZ + service)" "$( [[ "$prof" == "tty" ]] && echo OFF || echo ON )")
+  if [[ "$prof" != "tty" ]]; then
+    feats+=("browser" "Install/configure a desktop browser" "ON")
+    feats+=("flatpak" "Enable Flatpak + Flathub" "ON")
+  fi
+
+  local features
+  features=$(ui_checklist "Components" "Select which components to install/configure" 22 90 12 "${feats[@]}") || features=""
+  features="$(echo "$features" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+  save_kv GM_FEATURES "$features"
+
+  # Networking backend
+  if has_token "$features" iwd; then
+    save_kv GM_WIFI_BACKEND "iwd"
+  else
+    save_kv GM_WIFI_BACKEND "wpa"
+  fi
+  save_kv GM_ENABLE_BT "$(has_token "$features" bluetooth && echo yes || echo no)"
+
+  # Power policy (separate from profile)
+  # - handheld_ppd: power-profiles-daemon (good UX + per-game holding)
+  # - laptop_tlp: TLP (battery-first policy)
+  # - desktop_none: no power daemon (assume always-plugged desktop)
+  local default_power="desktop_none"
+  if [[ "$prof" == "gamemode" ]] || has_token "$features" handheld; then
+    default_power="handheld_ppd"
+  elif has_battery; then
+    default_power="laptop_tlp"
+  fi
+
+  local power
+  power=$(ui_menu "Power policy" "Choose system power management policy" \
+    "handheld_ppd" "Handheld: power-profiles-daemon (use performance holds for games)" \
+    "laptop_tlp"   "Laptop: TLP (battery-first tuning)" \
+    "desktop_none" "Desktop: no power daemon (keep it simple)") || power="$default_power"
+  save_kv GM_POWER_POLICY "$power"
+
+  # CPU tuning strategy
+  local cflags_mode
+  cflags_mode=$(ui_menu "CFLAGS strategy" "Choose global compile strategy" \
+    "balanced" "Balanced (recommended baseline)" \
+    "aggressive" "Aggressive (more O3 targets; higher build risk)") || cflags_mode="balanced"
+  save_kv GM_CFLAGS_MODE "$cflags_mode"
+
   # Kernel strategy
-  local kstrat="bin"
-  if ui_yesno "Kernel" "Use CachyOS-kernels overlay (cachyos-sources) for an optimized kernel later? (A bootable Gentoo kernel will be installed based on your binary choices.)" "yes"; then
+  local kstrat="gentoo"
+  if ui_yesno "Kernel" "Use CachyOS-kernels overlay (cachyos-sources + tuning)?" "yes"; then
     kstrat="cachyos"
   fi
   save_kv GM_KERNEL_STRATEGY "$kstrat"
 
+  # Device / HHD
   local device="generic"
-  if ui_yesno "Device" "Enable HHD handheld support (Handheld Daemon: gamepad/handheld integration)?" "yes"; then
+  if has_token "$features" handheld; then
     device="hhd"
   fi
   save_kv GM_DEVICE "$device"
 
+  # Hostname
   local hostname
   hostname=$(ui_input "Hostname" "Set hostname" "gentoo")
   save_kv GM_HOSTNAME "$hostname"
 
+  # Username
   local username
-  username=$(ui_input "User" "Create a primary user" "gamer")
+  username=$(ui_input "User" "Create a non-root user" "gamer")
   save_kv GM_USER "$username"
 
   # Passwords (stored in state temporarily; scrubbed at end)
@@ -87,9 +108,9 @@ run() {
   [[ "$userpw" == "$userpw2" ]] || die "User passwords did not match."
   save_kv GM_USERPW "$userpw"
 
-  # Desktop browser choice (only relevant when not tty)
+  # Desktop browser choice (only relevant when not tty, and if browser component enabled)
   local browser="none"
-  if [[ "$prof" != "tty" ]]; then
+  if [[ "$prof" != "tty" ]] && has_token "$features" browser; then
     browser=$(ui_menu "Browser" "Choose your default desktop browser" \
       "firefox"  "Firefox" \
       "librewolf" "LibreWolf (privacy-focused; may require more build time)" \
@@ -97,54 +118,9 @@ run() {
   fi
   save_kv GM_BROWSER "$browser"
 
-  # Java (runtime tuning via JAVA_TOOL_OPTIONS + optional JDK install)
-  local java_enable="no"
-  if ui_yesno "Java" "Enable Java install + runtime tuning (useful for Minecraft and Java games/apps)?" "$( [[ "$prof" == "tty" ]] && echo no || echo yes )"; then
-    java_enable="yes"
-  fi
-  save_kv GM_ENABLE_JAVA "$java_enable"
-
-  local java_impl="openjdk"
-  if [[ "$java_enable" == "yes" ]]; then
-    java_impl=$(ui_menu "Java" "Choose the JVM implementation (we'll fall back if unavailable)" \
-      "openjdk" "OpenJDK (recommended baseline)" \
-      "graalvm" "GraalVM (if available in repos; otherwise falls back to OpenJDK)")
-  fi
-  save_kv GM_JAVA_IMPL "$java_impl"
-
-  # Binary package preferences (time saver switches)
-  # Stored as a space-separated token list in GM_BINPKGS.
-  local -a items=()
-
-  # Defaults: kernel-bin ON; rust-bin ON; openjdk-bin ON when Java enabled; llvm-bin OFF
-  items+=("kernel-bin" "Use gentoo-kernel-bin (fast install, good fallback)" "ON")
-  items+=("rust-bin"   "Use rust-bin (massive compile time saver)" "ON")
-  if [[ "$java_enable" == "yes" ]]; then
-    items+=("openjdk-bin" "Use openjdk-bin (skip big JDK build)" "ON")
-  fi
-  items+=("llvm-bin"   "Use llvm-bin/clang-bin/lld-bin (faster, but less bleeding-edge)" "OFF")
-
-  if [[ "$browser" == "firefox" ]]; then
-    items+=("firefox-bin" "Use firefox-bin (skip a very long build)" "ON")
-  elif [[ "$browser" == "librewolf" ]]; then
-    items+=("librewolf-bin" "Try librewolf-bin if available (otherwise build from source)" "OFF")
-  fi
-
-  local binpkgs
-  binpkgs=$(ui_checklist "Binary packages" "Select which packages should prefer binary variants" 22 90 12 "${items[@]}") || binpkgs=""
-  # normalize
-  binpkgs="$(echo "$binpkgs" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
-  save_kv GM_BINPKGS "$binpkgs"
-
-  # Back-compat keys (older modules may read these)
-  save_kv GM_LLVM "$(has_token "$binpkgs" llvm-bin && echo bin || echo source)"
-  save_kv GM_FIREFOX "$(has_token "$binpkgs" firefox-bin && echo bin || echo source)"
-  save_kv GM_KERNEL_PKG "$(has_token "$binpkgs" kernel-bin && echo gentoo-kernel-bin || echo gentoo-kernel)"
-
-  # Flatpak
-  local flatpak="no"
-  local store="none"
-  if [[ "$prof" != "tty" ]] && ui_yesno "Flatpak" "Enable Flatpak + Flathub?" "yes"; then
+  # Flatpak store (optional)
+  local flatpak="no" store="none"
+  if [[ "$prof" != "tty" ]] && has_token "$features" flatpak; then
     flatpak="yes"
     store=$(ui_menu "Flatpak store" "Choose a GUI Flatpak store" \
       "bazaar" "Bazaar (like Bazzite)" \
@@ -153,6 +129,31 @@ run() {
   fi
   save_kv GM_FLATPAK "$flatpak"
   save_kv GM_FLATPAK_STORE "$store"
+
+  # Java enable is based on checklist
+  save_kv GM_ENABLE_JAVA "$(has_token "$features" java && echo yes || echo no)"
+
+  # Binary packages selection (only show relevant ones)
+  local -a binopts=()
+  if [[ "$browser" == "firefox" ]]; then
+    binopts+=("firefox-bin" "Use www-client/firefox-bin (much faster install)" "ON")
+  fi
+  if [[ "$browser" == "librewolf" ]]; then
+    binopts+=("librewolf-bin" "Use www-client/librewolf-bin (from LibreWolf overlay)" "OFF")
+  fi
+  if [[ "${GM_ENABLE_JAVA:-no}" == "yes" ]]; then
+    binopts+=("openjdk-bin" "Use dev-java/openjdk-bin (binary JDK)" "OFF")
+  fi
+  local binpkgs=""
+  if ((${#binopts[@]})); then
+    binpkgs=$(ui_checklist "Binary packages" "Select packages to use prebuilt binaries" 18 90 10 "${binopts[@]}") || binpkgs=""
+    binpkgs="$(echo "$binpkgs" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+  fi
+  save_kv GM_BINPKGS "$binpkgs"
+
+
+  # Perf/FDO pipeline: always enabled (not prompted)
+  save_kv GM_ENABLE_PERF "yes"
 
   log "Choices saved to ${GM_STATE_DIR}/gm.conf"
 }

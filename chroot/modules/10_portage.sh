@@ -173,9 +173,11 @@ media-libs/mesa vulkan wayland
 EOF
 
   # Install Java + runtime tuning helper if requested
-  install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-java-tune" /usr/local/bin/gm-java-tune
-  install_java
-  /usr/local/bin/gm-java-tune || true
+  if [[ "${GM_ENABLE_JAVA:-no}" == "yes" ]]; then
+    install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-java-tune" /usr/local/bin/gm-java-tune
+    install_java
+    /usr/local/bin/gm-java-tune || true
+  fi
 
   eix-update || true
   log "Portage configured."

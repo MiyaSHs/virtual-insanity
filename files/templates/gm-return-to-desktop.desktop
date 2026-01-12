@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Return to Desktop
+Exec=/usr/local/bin/gm-return-to-desktop
+Terminal=false
+Categories=System;

@@ -25,6 +25,7 @@ log "Golden Master chroot phase starting…"
 run_module "chroot/modules/00_base.sh"
 run_module "chroot/modules/10_portage.sh"
 run_module "chroot/modules/20_kernel_boot.sh"
+run_module "chroot/modules/25_power.sh"
 run_module "chroot/modules/30_users.sh"
 
 case "${GM_PROFILE}" in

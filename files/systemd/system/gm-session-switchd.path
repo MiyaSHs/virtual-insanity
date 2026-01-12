@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Golden Master session switch requests
+
+[Path]
+PathChanged=/run/gm/next-session
+PathExists=/run/gm/next-session
+
+[Install]
+WantedBy=multi-user.target

@@ -83,9 +83,36 @@ run() {
   emerge --quiet-build=y sys-apps/systemd sys-apps/systemd-utils || true
   systemctl enable systemd-timesyncd || true
 
-  # Networking
-  emerge --quiet-build=y net-misc/networkmanager || true
+  # Networking (NetworkManager, optionally with iwd backend)
+  if [[ "${GM_WIFI_BACKEND:-wpa}" == "iwd" ]]; then
+    # Ensure NetworkManager is built with iwd support
+    mkdir -p /etc/portage/package.use
+    echo "net-misc/networkmanager iwd" >> /etc/portage/package.use/gm-networkmanager
+    emerge --quiet-build=y net-wireless/iwd net-misc/networkmanager || true
+    mkdir -p /etc/NetworkManager/conf.d
+    cat > /etc/NetworkManager/conf.d/iwd.conf <<'EOF'
+[device]
+wifi.backend=iwd
+EOF
+    # Do not let iwd manage DHCP itself (NM should own config)
+    mkdir -p /etc/iwd
+    cat > /etc/iwd/main.conf <<'EOF'
+[General]
+EnableNetworkConfiguration=false
+EOF
+    systemctl enable --now iwd || true
+    systemctl disable --now wpa_supplicant 2>/dev/null || true
+    systemctl mask wpa_supplicant 2>/dev/null || true
+  else
+    emerge --quiet-build=y net-misc/networkmanager || true
+  fi
   systemctl enable NetworkManager || true
+
+  # Bluetooth
+  if [[ "${GM_ENABLE_BT:-no}" == "yes" ]]; then
+    emerge --quiet-build=y net-wireless/bluez || true
+    systemctl enable bluetooth || true
+  fi
 
   # Firmware microcode
   case "$(detect_cpu_vendor)" in

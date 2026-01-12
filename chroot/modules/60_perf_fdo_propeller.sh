@@ -17,7 +17,9 @@ install_scripts() {
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-fdo-accumulate" /usr/local/bin/gm-fdo-accumulate
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-optimize" /usr/local/bin/gm-optimize
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-portage-env-apply" /usr/local/bin/gm-portage-env-apply
-  install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-java-tune" /usr/local/bin/gm-java-tune
+  if [[ "${GM_ENABLE_JAVA:-no}" == "yes" ]]; then
+    install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-java-tune" /usr/local/bin/gm-java-tune
+  fi
   install -Dm644 "$GM_ROOT_DIR/files/scripts/gm-fdo-targets.conf" /etc/gm-fdo-targets.conf
 }
 
@@ -26,6 +28,11 @@ install_portage_hooks() {
 }
 
 run() {
+  if [[ "${GM_ENABLE_PERF:-yes}" != "yes" ]]; then
+    log "Perf/FDO pipeline disabled; skipping."
+    return 0
+  fi
+
   log "Setting up perf → sample-PGO (AutoFDO-style) + optional Propeller…"
 
   # perf tool
@@ -46,7 +53,9 @@ run() {
   /usr/local/bin/gm-portage-env-apply || true
 
   # Ensure Java tuning block exists if Java is installed
-  /usr/local/bin/gm-java-tune || true
+  if command -v gm-java-tune >/dev/null 2>&1; then
+    gm-java-tune || true
+  fi
 
   log "Perf/FDO pipeline installed."
 }

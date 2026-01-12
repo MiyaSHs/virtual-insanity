@@ -40,10 +40,10 @@ run() {
   emerge --quiet-build=y \
     kde-plasma/plasma-meta \
     kde-plasma/plasma-wayland-session \
+    kde-plasma/bluedevil \
     x11-misc/sddm \
     media-video/pipewire media-video/wireplumber \
     app-admin/xdg-desktop-portal-kde \
-    sys-power/power-profiles-daemon \
     || true
 
   # Gaming stack
@@ -77,9 +77,39 @@ run() {
     chattr +C /steam/SteamLibrary/steamapps/compatdata || true
   fi
 
-  # Disable SDDM by default; user can `sudo gm-desktop`
-  systemctl disable sddm || true
-  systemctl set-default multi-user.target || true
+  # SDDM autologin straight into Game Mode, with Plasma fallback.
+  mkdir -p /usr/share/wayland-sessions
+  cat > /usr/share/wayland-sessions/gm-gamemode.desktop <<'EOF'
+[Desktop Entry]
+Name=GM Game Mode
+Comment=Steam Gamepad UI inside Gamescope
+Exec=/usr/local/bin/gm-gamemode
+Type=Application
+DesktopNames=GM
+EOF
+
+  mkdir -p /etc/sddm.conf.d
+  cat > /etc/sddm.conf.d/00-gm.conf <<EOF
+[Autologin]
+User=${GM_USER}
+Session=gm-gamemode.desktop
+Relogin=true
+EOF
+
+  # Session switching helpers ("Return to Desktop" and back)
+  install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-session-switchd" /usr/local/sbin/gm-session-switchd
+  install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-return-to-desktop" /usr/local/bin/gm-return-to-desktop
+  install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-return-to-gamemode" /usr/local/bin/gm-return-to-gamemode
+  install -Dm644 "$GM_ROOT_DIR/files/systemd/system/gm-session-switchd.service" /etc/systemd/system/gm-session-switchd.service
+  install -Dm644 "$GM_ROOT_DIR/files/systemd/system/gm-session-switchd.path" /etc/systemd/system/gm-session-switchd.path
+  install -Dm644 "$GM_ROOT_DIR/files/templates/gm-tmpfiles.conf" /etc/tmpfiles.d/gm.conf
+  install -Dm644 "$GM_ROOT_DIR/files/templates/gm-return-to-desktop.desktop" /usr/share/applications/gm-return-to-desktop.desktop
+  install -Dm644 "$GM_ROOT_DIR/files/templates/gm-return-to-gamemode.desktop" /usr/share/applications/gm-return-to-gamemode.desktop
+  systemd-tmpfiles --create /etc/tmpfiles.d/gm.conf || true
+  systemctl enable gm-session-switchd.path || true
+
+  systemctl enable sddm || true
+  systemctl set-default graphical.target || true
 
   log "GameMode profile done."
 }

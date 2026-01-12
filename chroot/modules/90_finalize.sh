@@ -36,6 +36,12 @@ run() {
     gm-java-tune || true
   fi
 
+  # Golden Master defaults for system services
+  mkdir -p /etc/default
+  cat > /etc/default/golden-master <<EOF
+GM_USER=${GM_USER}
+EOF
+
   # Ensure systemd-boot doesn't wait on editor
   mkdir -p /boot/loader
   sed -i 's/^editor .*/editor no/' /boot/loader/loader.conf 2>/dev/null || true

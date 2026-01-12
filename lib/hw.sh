@@ -39,3 +39,16 @@ secure_boot_enabled() {
   fi
 }
 
+
+
+has_battery() {
+  ls /sys/class/power_supply/BAT* >/dev/null 2>&1
+}
+
+has_wifi() {
+  # crude: any wireless interface
+  ls /sys/class/net 2>/dev/null | while read -r i; do
+    [[ -d "/sys/class/net/$i/wireless" ]] && exit 0
+  done
+  return 1
+}

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REQ="/run/gm/next-session"
+[[ -r "$REQ" ]] || exit 0
+
+read -r target < "$REQ" || target=""
+target="$(echo "$target" | tr -d '\r\n\t ' )"
+[[ -n "$target" ]] || exit 0
+
+# Decide SDDM session file
+desktop_session="plasmawayland.desktop"
+if [[ ! -f "/usr/share/wayland-sessions/${desktop_session}" ]]; then
+  desktop_session="plasma.desktop"
+fi
+
+case "$target" in
+  desktop) session="$desktop_session" ;;
+  gamemode) session="gm-gamemode.desktop" ;;
+  *) exit 0 ;;
+esac
+
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/90-gm-autologin.conf <<EOF
+[Autologin]
+User=${GM_USER}
+Session=${session}
+Relogin=true
+EOF
+
+# Clear request early to avoid loops
+: > "$REQ" || true
+
+# Restart SDDM so it re-reads session config, then terminate user session
+systemctl restart sddm || true
+loginctl terminate-user "${GM_USER}" 2>/dev/null || true
