@@ -1,4 +1,4 @@
-# golden-master (Gentoo extreme gaming stack)
+# virtual-insanity (Gentoo extreme gaming stack)
 
 This repo is a **hands-free Gentoo installer** meant to be run from a Gentoo live USB (UEFI) and produce a system tuned for:
 - **gaming + general use**
