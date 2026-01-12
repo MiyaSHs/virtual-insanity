@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Golden Master optimize: apply profiles + rebuild targets"
+
+if [[ -f /etc/gm-fdo-targets.conf ]]; then
+  while IFS='|' read -r name regex bin mode; do
+    [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
+    /usr/local/lib/gm/gm-portage-env-apply "$name" || true
+  done < /etc/gm-fdo-targets.conf
+fi
+
+targets=(media-libs/mesa gui-wm/gamescope sys-kernel/gentoo-kernel sys-kernel/gentoo-kernel-bin)
+for t in "${targets[@]}"; do
+  if qlist -IC "$t" >/dev/null 2>&1; then
+    echo "Rebuilding: $t"
+    emerge -1 "$t"
+  fi
+done
+
+echo "Done."

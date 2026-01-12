@@ -1,0 +1,9 @@
+[Unit]
+Description=Enable Golden Master profiler
+
+[Timer]
+OnBootSec=30
+Unit=gm-perf-profiler.service
+
+[Install]
+WantedBy=timers.target

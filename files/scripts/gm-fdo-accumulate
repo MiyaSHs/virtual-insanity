@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CHUNK_DIR="/var/lib/gm-perf/chunks"
+CONF="/etc/gm-fdo-targets.conf"
+FDO_DIR="/etc/portage/fdo"
+TMP="/tmp/gm-fdo"
+
+mkdir -p "$FDO_DIR" "$TMP"
+
+have_tool() { command -v "$1" >/dev/null 2>&1; }
+
+mapfile -t chunks < <(ls -1 "$CHUNK_DIR"/chunk_*.data 2>/dev/null | sort || true)
+[[ "${#chunks[@]}" -gt 0 ]] || exit 0
+
+while IFS='|' read -r name regex bin mode; do
+  [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
+  [[ -e "$bin" ]] || continue
+
+  mkdir -p "${FDO_DIR}/${name}"
+
+  for c in "${chunks[@]}"; do
+    [[ -s "$c" ]] || continue
+
+    # AutoFDO sample profile (llvm-profgen + llvm-profdata)
+    if have_tool llvm-profgen && have_tool llvm-profdata; then
+      out_prof="${TMP}/$(basename "$c").${name}.afdo"
+      llvm-profgen --binary="$bin" --perfdata="$c" -o "$out_prof" || true
+
+      if [[ -s "$out_prof" ]]; then
+        merged="${FDO_DIR}/${name}/${name}.afdo"
+        if [[ -f "$merged" ]]; then
+          llvm-profdata merge -sample -o "${merged}.tmp" "$merged" "$out_prof"
+          mv "${merged}.tmp" "$merged"
+        else
+          mv "$out_prof" "$merged"
+        fi
+      fi
+    fi
+
+    # Propeller (create_llvm_prof, if available)
+    if have_tool create_llvm_prof; then
+      cluster="${FDO_DIR}/${name}/cluster.txt"
+      symorder="${FDO_DIR}/${name}/symorder.txt"
+      create_llvm_prof --format=propeller         --binary="$bin"         --profile="$c"         --out="$cluster"         --propeller_symorder="$symorder" >/dev/null 2>&1 || true
+    fi
+  done
+
+  /usr/local/lib/gm/gm-portage-env-apply "$name" || true
+done < "$CONF"
+
+rm -f "$CHUNK_DIR"/chunk_*.data 2>/dev/null || true
+rm -rf "$TMP" 2>/dev/null || true

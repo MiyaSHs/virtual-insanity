@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OUT_DIR="/var/lib/gm-perf/chunks"
+CONF="/etc/gm-fdo-targets.conf"
+mkdir -p "$OUT_DIR"
+
+active_now() {
+  while IFS='|' read -r name regex bin mode; do
+    [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
+    if pgrep -f "$regex" >/dev/null 2>&1; then
+      return 0
+    fi
+  done < "$CONF"
+  return 1
+}
+
+pick_perf_args() {
+  # Prefer --pfm-events if supported (libpfm)
+  if perf --help 2>&1 | grep -q -- '--pfm-events'; then
+    # branch stack on supported hardware
+    echo "--pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS -b -c 500009 -a -N"
+    return
+  fi
+  # fallback
+  echo "-e cycles:u -j any,u"
+}
+
+while true; do
+  if active_now; then
+    ts="$(date +%s)"
+    out="${OUT_DIR}/chunk_${ts}.data"
+    args="$(pick_perf_args)"
+    # shellcheck disable=SC2086
+    timeout 600 perf record $args -o "$out" -- sleep 600 || true
+  else
+    sleep 2
+  fi
+done

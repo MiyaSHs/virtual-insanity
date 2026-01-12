@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Golden Master: Re-optimize
+Exec=konsole -e sudo /usr/local/bin/gm-optimize
+Icon=system-run
+Terminal=false
+Categories=System;

@@ -1,0 +1,8 @@
+[Unit]
+Description=Golden Master FDO/Propeller accumulator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/gm/gm-fdo-accumulate
