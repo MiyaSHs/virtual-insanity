@@ -1,48 +1,58 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-gm_ask() {
-  local prompt="$1" default="${2:-}"
-  local ans
-  if [[ -n "$default" ]]; then
-    read -r -p "${prompt} [${default}]: " ans
-    echo "${ans:-$default}"
+# Simple TUI helpers (whiptail if available, fallback to select).
+
+have_whiptail() { command -v whiptail >/dev/null 2>&1; }
+
+ui_menu() {
+  local title="$1"; shift
+  local prompt="$1"; shift
+  local -a items=("$@") # pairs: key label key label ...
+
+  if have_whiptail; then
+    local choice
+    choice=$(whiptail --title "$title" --menu "$prompt" 20 90 10 "${items[@]}" 3>&1 1>&2 2>&3) || return 1
+    echo "$choice"
   else
-    read -r -p "${prompt}: " ans
-    echo "$ans"
+    echo "$title"
+    echo "$prompt"
+    local -a keys=()
+    local i=0
+    while [[ $i -lt ${#items[@]} ]]; do
+      keys+=("${items[$i]}")
+      i=$((i+2))
+    done
+    PS3="Select: "
+    select opt in "${keys[@]}"; do
+      [[ -n "${opt:-}" ]] && { echo "$opt"; return 0; }
+    done
   fi
 }
 
-gm_yesno() {
-  local prompt="$1" default="${2:-y}"
-  local ans
-  while true; do
-    read -r -p "${prompt} (y/n) [${default}]: " ans
-    ans="${ans:-$default}"
-    case "$ans" in
-      y|Y) return 0 ;;
-      n|N) return 1 ;;
-      *) echo "Please answer y or n." ;;
-    esac
-  done
+ui_yesno() {
+  local title="$1" prompt="$2" default="${3:-yes}"
+  if have_whiptail; then
+    local def=0
+    [[ "$default" == "no" ]] && def=1
+    if whiptail --title "$title" --yesno "$prompt" 12 80; then
+      return 0
+    else
+      return 1
+    fi
+  else
+    local ans
+    read -r -p "$prompt [y/N]: " ans
+    [[ "${ans,,}" =~ ^y(es)?$ ]]
+  fi
 }
 
-gm_menu() {
-  local title="$1"; shift
-  local -a items=("$@")
-  echo
-  echo "$title"
-  local i=1
-  for it in "${items[@]}"; do
-    echo "  $i) $it"
-    i=$((i+1))
-  done
-  local choice
-  while true; do
-    read -r -p "Select [1-${#items[@]}]: " choice
-    [[ "$choice" =~ ^[0-9]+$ ]] || continue
-    (( choice>=1 && choice<=${#items[@]} )) || continue
-    echo "${items[$((choice-1))]}"
-    return 0
-  done
+ui_input() {
+  local title="$1" prompt="$2" default="${3:-}"
+  if have_whiptail; then
+    whiptail --title "$title" --inputbox "$prompt" 12 80 "$default" 3>&1 1>&2 2>&3
+  else
+    read -r -p "$prompt [$default]: " ans
+    echo "${ans:-$default}"
+  fi
 }

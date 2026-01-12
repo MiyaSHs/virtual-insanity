@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$GM_ROOT_DIR/lib/common.sh"
 
 run() {
-  emerge --quiet-build sys-apps/dbus
-  systemctl enable dbus
-  gm_ok "TTY profile ready."
+  log "Installing TTY profile packages…"
+  emerge --quiet-build=y app-editors/neovim app-misc/tmux sys-apps/mlocate \
+    net-misc/openssh || true
+  systemctl enable sshd || true
+
+  systemctl set-default multi-user.target || true
+  log "TTY profile done."
 }

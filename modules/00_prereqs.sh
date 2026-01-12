@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=lib/common.sh
+source "$GM_ROOT_DIR/lib/common.sh"
+# shellcheck source=lib/hw.sh
+source "$GM_ROOT_DIR/lib/hw.sh"
 
 run() {
-  gm_need_root
+  net_required
 
-  command -v curl >/dev/null 2>&1 || gm_die "curl is required."
-  command -v lsblk >/dev/null 2>&1 || gm_die "lsblk is required."
-  command -v parted >/dev/null 2>&1 || gm_die "parted is required."
-  command -v mkfs.vfat >/dev/null 2>&1 || gm_die "mkfs.vfat is required."
+  is_uefi_boot || die "This installer requires UEFI boot mode."
 
-  if ! gm_has_internet; then
-    gm_die "No internet. Connect first. (Installer is online-only.)"
-  fi
+  for c in curl tar xz lsblk blkid sgdisk parted mkfs.ext4 mkfs.fat; do
+    command -v "${c%% *}" >/dev/null 2>&1 || warn "Command not found (might still work later): $c"
+  done
 
-  [[ -d /sys/firmware/efi ]] || gm_die "UEFI mode required (boot USB in UEFI)."
-
-  gm_ok "Prereqs OK."
+  log "CPU vendor: $(detect_cpu_vendor)"
+  log "GPU vendor: $(detect_gpu_vendor)"
+  log "RAM: $(mem_gib) GiB"
+  if has_tpm2; then log "TPM2: present"; else warn "TPM2: not detected"; fi
+  if secure_boot_enabled; then log "Secure Boot: enabled"; else log "Secure Boot: disabled/unknown"; fi
 }

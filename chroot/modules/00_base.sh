@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$GM_ROOT_DIR/lib/common.sh"
 
 run() {
-  [[ -f /etc/gentoo-release ]] || gm_die "Not in Gentoo stage3?"
+  log "Base system configuration…"
 
-  mkdir -p /boot /etc/portage/package.use /etc/portage/package.env /etc/portage/env
-  mkdir -p /etc/gm
+  echo "${GM_HOSTNAME}" > /etc/hostname
 
-  # minimal locale baseline (you can expand later)
-  cp -f "${ROOT_DIR}/files/templates/locale.gen" /etc/locale.gen || true
-  locale-gen >/dev/null 2>&1 || true
+  ln -sf /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime || true
+  echo 'clock="local"' > /etc/conf.d/hwclock 2>/dev/null || true
 
-  cp -f "${ROOT_DIR}/files/templates/vconsole.conf" /etc/vconsole.conf || true
+  # Locale
+  cp -f "$GM_ROOT_DIR/files/templates/locale.gen" /etc/locale.gen
+  locale-gen
+  echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-  gm_ok "Base prep done."
+  # Root password
+  echo "root:${GM_ROOTPW}" | chpasswd
+
+  # User
+  useradd -m -G wheel,audio,video,input,plugdev,games -s /bin/bash "${GM_USER}" || true
+  echo "${GM_USER}:${GM_USERPW}" | chpasswd
+
+  # Sudo
+  emerge --quiet-build=y app-admin/sudo
+  sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+
+  log "Base done."
 }

@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Golden Master optimize: apply profiles + rebuild targets"
+log() { echo "[gm-optimize] $*"; }
 
-if [[ -f /etc/gm-fdo-targets.conf ]]; then
-  while IFS='|' read -r name regex bin mode; do
-    [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
-    /usr/local/lib/gm/gm-portage-env-apply "$name" || true
-  done < /etc/gm-fdo-targets.conf
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "Run as root (sudo gm-optimize)" >&2
+  exit 1
 fi
 
-targets=(media-libs/mesa gui-wm/gamescope sys-kernel/gentoo-kernel sys-kernel/gentoo-kernel-bin)
-for t in "${targets[@]}"; do
-  if qlist -IC "$t" >/dev/null 2>&1; then
-    echo "Rebuilding: $t"
-    emerge -1 "$t"
-  fi
-done
+/usr/local/bin/gm-fdo-accumulate || true
+/usr/local/bin/gm-portage-env-apply || true
 
-echo "Done."
+if [[ -f /etc/portage/sets/gm-fdo-targets ]]; then
+  if grep -q . /etc/portage/sets/gm-fdo-targets; then
+    log "Rebuilding installed targets with latest profiles…"
+    emerge --oneshot @gm-fdo-targets || true
+  else
+    log "No installed targets listed."
+  fi
+else
+  log "No target set found."
+fi
+
+log "Done."

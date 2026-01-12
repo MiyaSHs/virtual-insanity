@@ -1,41 +1,59 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-gm_banner() { echo -e "\n==> $*\n"; }
-gm_ok()     { echo -e "[OK] $*"; }
-gm_warn()   { echo -e "[WARN] $*" >&2; }
-gm_die()    { echo -e "[FATAL] $*" >&2; exit 1; }
+log() { echo -e "[gm] $*"; }
+warn() { echo -e "[gm][WARN] $*" >&2; }
+die() { echo -e "[gm][FATAL] $*" >&2; exit 1; }
 
-gm_need_root() {
-  [[ "${EUID:-$(id -u)}" -eq 0 ]] || gm_die "Run as root."
+require_root() {
+  [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "Run as root."
 }
 
-gm_cmd() {
-  echo "+ $*"
-  "$@"
+on_error() {
+  local rc="$1" line="$2"
+  warn "Error (rc=$rc) at line $line"
+  warn "Last command: ${BASH_COMMAND:-unknown}"
 }
 
-gm_has_internet() {
-  curl -fsSL --max-time 5 https://www.gentoo.org >/dev/null 2>&1
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
-gm_run_module() {
-  local f="$1"
-  [[ -f "$f" ]] || gm_die "Missing module: $f"
-  gm_banner "Running module: $(basename "$f")"
-  # shellcheck source=/dev/null
-  source "$f"
-  run
+net_required() {
+  if ! ping -c1 -W1 1.1.1.1 >/dev/null 2>&1; then
+    die "No internet connectivity. This installer is online-only."
+  fi
 }
 
-gm_write_conf() {
-  local k="$1" v="$2"
-  grep -q "^${k}=" "$GM_CONF" 2>/dev/null && sed -i "s|^${k}=.*|${k}=\"${v}\"|" "$GM_CONF" || echo "${k}=\"${v}\"" >> "$GM_CONF"
+is_uefi_boot() {
+  [[ -d /sys/firmware/efi/efivars ]]
 }
 
-gm_read_conf() {
-  local k="$1"
+load_state() {
+  local f="${GM_STATE_DIR}/gm.conf"
+  [[ -f "$f" ]] || die "Missing state file $f"
   # shellcheck disable=SC1090
-  source "$GM_CONF"
-  eval "echo \"\${${k}:-}\""
+  source "$f"
 }
+
+save_kv() {
+  local key="$1" val="$2"
+  local f="${GM_STATE_DIR}/gm.conf"
+  mkdir -p "$GM_STATE_DIR"
+  if [[ ! -f "$f" ]]; then
+    echo "# Golden Master installer state" >"$f"
+  fi
+  # remove existing
+  grep -vE "^${key}=" "$f" >"$f.tmp" || true
+  mv "$f.tmp" "$f"
+  printf "%s=%q\n" "$key" "$val" >>"$f"
+}
+
+chroot_run() {
+  local root="$1"; shift
+  chroot "$root" /usr/bin/env -i \
+    HOME=/root TERM="${TERM:-xterm-256color}" \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    "$@"
+}
+

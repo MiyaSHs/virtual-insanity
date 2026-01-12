@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Launch Steam Gamepad UI inside Gamescope.
+# Designed for autologin TTY1 use.
+
+log() { echo "[gm-gamemode] $*"; }
+
+if ! command -v gamescope >/dev/null 2>&1; then
+  log "gamescope not installed."
+  exec bash
+fi
+if ! command -v steam >/dev/null 2>&1; then
+  log "steam not installed."
+  exec bash
+fi
+
+# Allow overrides
+if [[ -r /etc/gm-gamemode.conf ]]; then
+  # shellcheck disable=SC1091
+  source /etc/gm-gamemode.conf
+fi
+
+W="${GM_GS_WIDTH:-1920}"
+H="${GM_GS_HEIGHT:-1080}"
+GS_ARGS="${GM_GS_ARGS:--f -W ${W} -H ${H} --adaptive-sync}"
+
+export XDG_SESSION_TYPE=wayland
+export SDL_VIDEODRIVER=wayland
+export QT_QPA_PLATFORM=wayland
+export MOZ_ENABLE_WAYLAND=1
+export STEAM_FORCE_DESKTOPUI_SCALING="${STEAM_FORCE_DESKTOPUI_SCALING:-1}"
+
+log "Starting Steam Gamepad UI…"
+exec dbus-run-session -- gamescope ${GS_ARGS} -- steam -gamepadui

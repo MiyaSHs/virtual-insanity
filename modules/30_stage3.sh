@@ -1,24 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$GM_ROOT_DIR/lib/common.sh"
+source "$GM_ROOT_DIR/lib/gentoo.sh"
 
 run() {
-  local stage3_base="https://distfiles.gentoo.org/releases/amd64/autobuilds"
-  local stage3_txt="${stage3_base}/current-stage3-amd64-systemd/latest-stage3-amd64-systemd.txt"
+  load_state
+  local mnt="$GM_MNT"
+  [[ -d "$mnt" ]] || die "Mount not found: $mnt"
 
-  gm_cmd mkdir -p "$GM_MNT"
-  gm_cmd cd "$GM_MNT"
+  local arch="amd64"
+  local flavor="desktop-systemd"
+  local url
+  url=$(stage3_url_for "$arch" "$flavor") || die "Failed to resolve stage3 URL."
+  save_kv GM_STAGE3_URL "$url"
 
-  gm_banner "Fetching stage3 list"
-  local tarball
-  tarball="$(curl -fsSL "$stage3_txt" | awk '$1 !~ /^#/ {print $1; exit}')"
-  [[ -n "$tarball" ]] || gm_die "Could not parse stage3 tarball from $stage3_txt"
+  download_stage3 "$url" "$GM_STATE_DIR"
 
-  gm_banner "Downloading stage3: $tarball"
-  gm_cmd curl -fL --progress-bar "${stage3_base}/${tarball}" -o stage3.tar.xz
+  log "Extracting stage3…"
+  tar xpf "$GM_STATE_DIR/stage3.tar.xz" -C "$mnt" --xattrs-include='*.*' --numeric-owner
 
-  gm_banner "Extracting stage3"
-  gm_cmd tar xpf stage3.tar.xz --xattrs-include='*.*' --numeric-owner
+  log "Copying DNS config…"
+  cp -L /etc/resolv.conf "$mnt/etc/resolv.conf"
 
-  gm_cmd cp -f /etc/resolv.conf "$GM_MNT/etc/resolv.conf"
-  gm_ok "Stage3 installed."
+  # Copy repo into new system (so chroot can access files/)
+  log "Copying installer repo into target…"
+  mkdir -p "$mnt/root/golden-master"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "$GM_ROOT_DIR/" "$mnt/root/golden-master/"
+  else
+    cp -a "$GM_ROOT_DIR/." "$mnt/root/golden-master/"
+  fi
+
+  log "Stage3 ready."
 }

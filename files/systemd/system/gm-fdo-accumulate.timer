@@ -1,9 +1,9 @@
 [Unit]
-Description=Run FDO/Propeller accumulation periodically
+Description=Run Golden Master profile accumulator periodically
 
 [Timer]
-OnBootSec=5m
-OnUnitActiveSec=6h
+OnBootSec=10min
+OnUnitActiveSec=1h
 Persistent=true
 
 [Install]

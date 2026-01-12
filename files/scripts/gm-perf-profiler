@@ -1,39 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OUT_DIR="/var/lib/gm-perf/chunks"
-CONF="/etc/gm-fdo-targets.conf"
-mkdir -p "$OUT_DIR"
+# Process-aware perf sampler.
+# Records perf data only while target triggers are running.
 
-active_now() {
-  while IFS='|' read -r name regex bin mode; do
-    [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
-    if pgrep -f "$regex" >/dev/null 2>&1; then
-      return 0
-    fi
-  done < "$CONF"
+[[ -r /etc/gm-fdo-targets.conf ]] && source /etc/gm-fdo-targets.conf
+
+log() { echo "[gm-perf] $*"; }
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing $1" >&2; exit 1; }; }
+
+need perf
+need pgrep
+need date
+
+mkdir -p "${GM_PERF_DIR}/chunks"
+chmod 700 "${GM_PERF_DIR}/chunks"
+
+active_triggers() {
+  local entry
+  for entry in "${GM_TARGETS[@]:-}"; do
+    IFS='|' read -r _name _atom _bin _triggers <<<"$entry"
+    for t in $_triggers; do
+      if pgrep -fa "$t" >/dev/null 2>&1; then
+        echo "$t"
+        return 0
+      fi
+    done
+  done
   return 1
 }
 
-pick_perf_args() {
-  # Prefer --pfm-events if supported (libpfm)
-  if perf --help 2>&1 | grep -q -- '--pfm-events'; then
-    # branch stack on supported hardware
-    echo "--pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS -b -c 500009 -a -N"
-    return
+choose_perf_args() {
+  # Prefer LBR/branch stacks when supported; fallback to dwarf.
+  # LBR is CPU/PMU dependent; errors should fall back cleanly.
+  local hz="${GM_PERF_SAMPLE_HZ}"
+  local dur="${GM_PERF_DURATION_SEC}"
+  local out="$1"
+
+  # Try: cycles:u + branch stacks
+  if perf record -q -o "$out" -F "$hz" -e cycles:u -j any,u -- sleep 1 >/dev/null 2>&1; then
+    echo "-F ${hz} -e cycles:u -j any,u"
+    return 0
   fi
-  # fallback
-  echo "-e cycles:u -j any,u"
+
+  # Try: cycles:u + dwarf callgraph
+  echo "-F ${hz} -e cycles:u --call-graph dwarf,16384"
 }
 
 while true; do
-  if active_now; then
-    ts="$(date +%s)"
-    out="${OUT_DIR}/chunk_${ts}.data"
-    args="$(pick_perf_args)"
-    # shellcheck disable=SC2086
-    timeout 600 perf record $args -o "$out" -- sleep 600 || true
+  if trig=$(active_triggers); then
+    ts="$(date +%Y%m%d-%H%M%S)"
+    out="${GM_PERF_DIR}/chunks/perf-${ts}.data"
+    args="$(choose_perf_args "$out")"
+    log "Trigger active (${trig}). Recording ${GM_PERF_DURATION_SEC}s to ${out}…"
+    # System-wide record for simplicity; limited to active window
+    perf record -q -o "$out" $args -a -- sleep "${GM_PERF_DURATION_SEC}" || true
+    # Optional compress
+    if command -v zstd >/dev/null 2>&1; then
+      zstd -q -f -1 "$out" -o "${out}.zst" && rm -f "$out" || true
+    fi
   else
-    sleep 2
+    sleep "${GM_PERF_IDLE_SEC}"
   fi
 done

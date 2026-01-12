@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$GM_ROOT_DIR/lib/common.sh"
 
 run() {
-  gm_mount_pseudos
+  load_state
+  local mnt="$GM_MNT"
 
-  gm_cmd mkdir -p "$GM_MNT/root/golden-master"
-  gm_cmd rsync -a --delete "${GM_ROOT_DIR}/" "$GM_MNT/root/golden-master/"
+  log "Preparing chroot mounts…"
+  mount -t proc /proc "$mnt/proc"
+  mount --rbind /sys "$mnt/sys"
+  mount --make-rslave "$mnt/sys"
+  mount --rbind /dev "$mnt/dev"
+  mount --make-rslave "$mnt/dev"
 
-  gm_cmd cp -f "$GM_CONF" "$GM_MNT/root/gm-install.conf"
+  log "Entering chroot…"
+  cp -f "$GM_STATE_DIR/gm.conf" "$mnt/root/golden-master/gm.conf"
+  chroot_run "$mnt" /bin/bash /root/golden-master/chroot/chroot.sh
 
-  gm_banner "Entering chroot"
-  gm_cmd chroot "$GM_MNT" /bin/bash -lc "cd /root/golden-master && bash chroot/chroot.sh"
-
-  gm_umount_pseudos
-  gm_ok "Chroot phase finished."
+  log "Chroot phase complete."
 }

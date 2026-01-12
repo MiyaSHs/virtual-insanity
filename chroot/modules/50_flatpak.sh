@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$GM_ROOT_DIR/lib/common.sh"
 
 run() {
-  local store
-  store="$(gm_read_conf FLATPAK_STORE)"
+  if [[ "${GM_FLATPAK:-no}" != "yes" ]]; then
+    log "Flatpak disabled; skipping."
+    return 0
+  fi
 
-  emerge --quiet-build sys-apps/flatpak
+  log "Enabling Flatpak + Flathub…"
+  emerge --quiet-build=y sys-apps/flatpak || true
 
-  case "$store" in
-    plasma-discover*)
-      emerge --quiet-build kde-apps/discover
-      ;;
-    gnome-software*)
-      emerge --quiet-build gnome-extra/gnome-software
-      ;;
-    none*) : ;;
-  esac
+  flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || true
 
-  gm_ok "Flatpak enabled."
+  if [[ "${GM_FLATPAK_STORE:-none}" == "bazaar" ]]; then
+    # Bazaar app id on Flathub: io.github.kolunmi.Bazaar
+    flatpak install -y --system flathub io.github.kolunmi.Bazaar || true
+  fi
+
+  # Discover is handled by Plasma package set (kde-apps/discover)
+  log "Flatpak done."
 }

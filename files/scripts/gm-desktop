@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "Run as root: sudo gm-desktop" >&2
+  exit 1
+fi
+systemctl set-default graphical.target || true
+systemctl start sddm || true
+echo "Desktop starting (SDDM)."

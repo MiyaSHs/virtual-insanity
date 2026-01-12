@@ -1,7 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Golden Master: Re-optimize
-Exec=konsole -e sudo /usr/local/bin/gm-optimize
-Icon=system-run
+Name=Golden Master: Re-optimize now
+Comment=Accumulate profiles and rebuild tuned targets (will prompt for sudo)
+Exec=konsole -e sudo gm-optimize
+Icon=preferences-system-performance
 Terminal=false
 Categories=System;

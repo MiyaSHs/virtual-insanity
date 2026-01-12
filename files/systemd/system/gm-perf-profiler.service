@@ -1,14 +1,15 @@
 [Unit]
-Description=Golden Master process-aware perf profiler (chunks)
-After=network-online.target
-Wants=network-online.target
+Description=Golden Master process-aware perf sampler
+After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/lib/gm/gm-perf-profiler
+ExecStart=/usr/local/bin/gm-perf-profiler
 Restart=always
-RestartSec=2
-Nice=10
+RestartSec=3
+
+# perf needs elevated capabilities; simplest is root
+User=root
 
 [Install]
 WantedBy=multi-user.target

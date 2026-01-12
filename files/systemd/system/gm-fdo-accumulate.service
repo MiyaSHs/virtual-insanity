@@ -1,8 +1,7 @@
 [Unit]
-Description=Golden Master FDO/Propeller accumulator
-After=network-online.target
-Wants=network-online.target
+Description=Golden Master profile accumulator (llvm-profgen)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/gm/gm-fdo-accumulate
+ExecStart=/usr/local/bin/gm-fdo-accumulate
+User=root

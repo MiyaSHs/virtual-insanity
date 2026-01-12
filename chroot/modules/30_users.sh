@@ -1,16 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$GM_ROOT_DIR/lib/common.sh"
 
 run() {
-  local username
-  username="$(gm_read_conf USERNAME)"
+  log "User/session defaults…"
 
-  useradd -m -G wheel,video,audio,input -s /bin/bash "$username" || true
-  echo "%wheel ALL=(ALL) ALL" > /etc/sudoers.d/10-wheel
+  # Allow wheel sudo already configured.
 
-  echo
-  gm_warn "Set user password now (recommended)."
-  passwd "$username" || true
+  # If gamemode: autologin on tty1 into user
+  if [[ "${GM_PROFILE}" == "gamemode" ]]; then
+    mkdir -p /etc/systemd/system/getty@tty1.service.d
+    cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin ${GM_USER} --noclear %I \$TERM
+Type=idle
+EOF
 
-  gm_ok "User created: $username"
+    # User bash_profile auto-launch
+    local home="/home/${GM_USER}"
+    cat >> "${home}/.bash_profile" <<'EOF'
+
+# Golden Master: auto-start gamemode on tty1
+if [[ -z "${DISPLAY:-}" && "$(tty)" == "/dev/tty1" && -x /usr/local/bin/gm-gamemode ]]; then
+  exec /usr/local/bin/gm-gamemode
+fi
+EOF
+    chown "${GM_USER}:${GM_USER}" "${home}/.bash_profile"
+  fi
+
+  log "User/session done."
 }

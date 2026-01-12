@@ -1,34 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-gm_detect_cpu_vendor() {
-  if grep -q "GenuineIntel" /proc/cpuinfo; then echo "intel"; return; fi
-  if grep -q "AuthenticAMD" /proc/cpuinfo; then echo "amd"; return; fi
+detect_cpu_vendor() {
+  if grep -qi "AuthenticAMD" /proc/cpuinfo; then echo "amd"; return; fi
+  if grep -qi "GenuineIntel" /proc/cpuinfo; then echo "intel"; return; fi
   echo "unknown"
 }
 
-gm_detect_cpu_flags_x86() {
-  if command -v cpuid2cpuflags >/dev/null 2>&1; then
-    cpuid2cpuflags | sed 's/^CPU_FLAGS_X86: //'
-    return
+detect_gpu_vendor() {
+  if lspci -nn | grep -qiE "VGA|3D"; then
+    if lspci -nn | grep -qi "NVIDIA"; then echo "nvidia"; return; fi
+    if lspci -nn | grep -qiE "AMD|ATI"; then echo "amd"; return; fi
+    if lspci -nn | grep -qi "Intel"; then echo "intel"; return; fi
   fi
-  awk -F': ' '/^flags/{print $2; exit}' /proc/cpuinfo | tr ' ' '\n' | sort -u | tr '\n' ' '
-}
-
-gm_detect_gpu_vendor() {
-  local v
-  v="$(lspci 2>/dev/null | grep -Ei 'VGA|3D|Display' || true)"
-  if echo "$v" | grep -qi "NVIDIA"; then echo "nvidia"; return; fi
-  if echo "$v" | grep -qi "AMD|ATI"; then echo "amd"; return; fi
-  if echo "$v" | grep -qi "Intel"; then echo "intel"; return; fi
   echo "unknown"
 }
 
-gm_guess_video_cards() {
-  case "$(gm_detect_gpu_vendor)" in
-    amd)   echo "amdgpu radeonsi" ;;
-    intel) echo "i915 iris" ;;
-    nvidia) echo "nvidia" ;;
-    *)     echo "" ;;
-  esac
+mem_gib() {
+  awk '/MemTotal/ {printf "%.0f\n", $2/1024/1024}' /proc/meminfo
 }
+
+has_tpm2() {
+  [[ -c /dev/tpmrm0 || -c /dev/tpm0 ]]
+}
+
+secure_boot_enabled() {
+  # On most distros this exists; in live env may not.
+  if [[ -r /sys/firmware/efi/efivars/SecureBoot-* ]]; then
+    # 5th byte indicates enabled (1)
+    local f
+    f=$(ls /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | head -n1 || true)
+    [[ -n "$f" ]] || return 1
+    local v
+    v=$(hexdump -v -e '1/1 "%02x"' "$f" 2>/dev/null | tail -c 2 || true)
+    [[ "$v" == "01" ]]
+  else
+    return 1
+  fi
+}
+

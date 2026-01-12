@@ -1,0 +1,61 @@
+# /etc/portage/bashrc - Golden Master dynamic tuning for selected targets
+# This runs inside Portage build environments.
+# It injects ThinLTO + SamplePGO (+ optional Propeller ordering) for configured targets only.
+
+# shellcheck disable=SC1091
+[[ -r /etc/gm-fdo-targets.conf ]] && source /etc/gm-fdo-targets.conf
+
+GM_PROFILE_DIR="${GM_PROFILE_DIR:-/var/lib/gm/profiles}"
+
+gm_is_target_atom() {
+  local atom="$1"
+  local entry
+  for entry in "${GM_TARGETS[@]:-}"; do
+    IFS='|' read -r _name _atom _bin _triggers <<<"$entry"
+    if [[ "$_atom" == "$atom" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+gm_target_name_for_atom() {
+  local atom="$1"
+  local entry
+  for entry in "${GM_TARGETS[@]:-}"; do
+    IFS='|' read -r _name _atom _bin _triggers <<<"$entry"
+    if [[ "$_atom" == "$atom" ]]; then
+      echo "$_name"; return 0
+    fi
+  done
+  echo ""
+}
+
+gm_apply_flags() {
+  local atom="${CATEGORY}/${PN}"
+  gm_is_target_atom "$atom" || return 0
+
+  local key="${CATEGORY}-${PN}"
+  local afdo="${GM_PROFILE_DIR}/${key}.afdo"
+  local prop="${GM_PROFILE_DIR}/${key}.propeller.txt"
+
+  # Baseline: high value flags for “big” targets
+  # Note: -O3 is used only for targets, not globally.
+  local extra="-O3 -gline-tables-only -fdebug-info-for-profiling -fno-omit-frame-pointer -flto=thin"
+
+  if [[ -f "$afdo" ]]; then
+    extra+=" -fprofile-sample-use=${afdo}"
+  fi
+
+  # Propeller (lld symbol ordering). Optional and experimental.
+  if [[ -f "$prop" ]]; then
+    # lld supports --symbol-ordering-file
+    export LDFLAGS="${LDFLAGS:-} -Wl,--symbol-ordering-file=${prop}"
+    extra+=" -fbasic-block-address-map -fbasic-block-sections=labels"
+  fi
+
+  export CFLAGS="${CFLAGS:-} ${extra}"
+  export CXXFLAGS="${CXXFLAGS:-} ${extra}"
+}
+
+gm_apply_flags || true

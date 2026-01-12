@@ -1,23 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-source "${ROOT_DIR}/lib/common.sh"
-source "${ROOT_DIR}/lib/ui.sh"
-source "${ROOT_DIR}/lib/hw.sh"
-source "${ROOT_DIR}/lib/gentoo.sh"
-
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export GM_ROOT_DIR="$ROOT_DIR"
-export GM_CONF="/tmp/gm-install.conf"
-export GM_MNT="/mnt/gentoo"
+export GM_STATE_DIR="${GM_STATE_DIR:-/tmp/golden-master}"
+mkdir -p "$GM_STATE_DIR"
 
-gm_banner "Golden Master Gentoo Installer (live phase)"
+# shellcheck source=lib/common.sh
+source "$ROOT_DIR/lib/common.sh"
+# shellcheck source=lib/ui.sh
+source "$ROOT_DIR/lib/ui.sh"
 
-gm_run_module "${ROOT_DIR}/modules/00_prereqs.sh"
-gm_run_module "${ROOT_DIR}/modules/10_questions.sh"
-gm_run_module "${ROOT_DIR}/modules/20_disk.sh"
-gm_run_module "${ROOT_DIR}/modules/30_stage3.sh"
-gm_run_module "${ROOT_DIR}/modules/40_chroot_enter.sh"
+require_root
+trap 'on_error $? $LINENO' ERR
 
-gm_ok "Install completed. You can reboot now."
+log "Golden Master installer starting (live environment)."
+log "State dir: $GM_STATE_DIR"
+
+run_module() {
+  local mod="$1"
+  # shellcheck disable=SC1090
+  source "$ROOT_DIR/$mod"
+  run
+}
+
+# Live-side modules
+run_module "modules/00_prereqs.sh"
+run_module "modules/10_questions.sh"
+run_module "modules/20_disk.sh"
+run_module "modules/30_stage3.sh"
+run_module "modules/40_chroot_enter.sh"
+
+log "Install completed. You can reboot into the new system."

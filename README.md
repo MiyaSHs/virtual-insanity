@@ -1,34 +1,96 @@
-# virtual-insanity (Gentoo extreme optimization scaffold)
+# golden-master (Gentoo extreme gaming stack)
 
-This is a modular Gentoo installer intended to be run from the Gentoo live USB (UEFI) and produce:
-- systemd + systemd-boot
-- optional full-disk encryption (LUKS2 root)
-- profiles: **tty**, **plasma**, **gamemode** (Steam+Gamescope + Plasma fallback)
-- optional Flatpak enablement (and optional GUI store)
-- a **process-aware perf profiler** that writes chunks to disk only while “interesting” apps are running
-- a **profile accumulator** that converts perf chunks into sample profiles (AutoFDO) + Propeller files
-- Portage integration that injects flags for installed targets and a one-shot **gm-optimize** rebuild helper
+This repo is a **hands-free Gentoo installer** meant to be run from a Gentoo live USB (UEFI) and produce a system tuned for:
+- **gaming + general use**
+- **LLVM/Clang toolchain**, ThinLTO, sample-PGO (AutoFDO-style via SPGO), and optional Propeller flow
+- **systemd + systemd-boot**
+- optional **LUKS2 encryption** with **TPM2 auto-unlock** (fallback passphrase always kept)
+- profiles:
+  - `tty` (minimal)
+  - `plasma` (Wayland + PipeWire + Discover/Flatpak)
+  - `gamemode` (Steam + Gamescope session at boot, with Plasma “Return to Desktop”)
+- device add-ons:
+  - `rog-ally` module (installs **hhd** + sensible defaults)
 
-## Quick start (live USB)
+> ⚠️ This is intentionally aggressive and “bleeding edge”. It aims to remain bootable and Steam-capable, but you are opting into an experimental pipeline.
+
+---
+
+## Quick start (from live USB)
+
 ```bash
-# inside the live environment, as root
-git clone https://github.com/YOU/golden-master.git
+git clone https://github.com/<you>/golden-master.git
 cd golden-master
 bash install.sh
 ```
 
-## Filesystem notes
-- The installer can format root as btrfs/ext4/xfs/bcachefs (bcachefs is experimental).
-- For btrfs, you can later enable compression/snapshots; the scaffold keeps the initial mount simple.
+The installer will:
+1. Validate network + UEFI
+2. Ask a few questions (disk, filesystem, encryption, profile, binary-vs-source for big packages)
+3. Install stage3 (systemd profile), Portage, base system
+4. Install a bootable kernel (fast path: `gentoo-kernel-bin`), systemd-boot, initramfs (dracut)
+5. Configure profiles (tty/plasma/gamemode) + optional ROG Ally module
+6. Drop a **re-optimize** shortcut in Plasma (if installed)
 
-## Perf/FDO notes
-- Profiling is **process-aware** (does nothing unless configured processes are running).
-- Profiles are generated only for targets that are actually installed (mesa/gamescope/kernel by default).
-- Expand `/etc/gm-fdo-targets.conf` and `gm-portage-env-apply` mapping to cover more packages.
+---
 
-## Rebuild helper
-- `gm-optimize` applies env mappings and rebuilds installed targets.
-- In Plasma, you can add the `.desktop` launcher from `files/systemd/user/gm-optimize.desktop`.
+## The “Golden Master” optimization loop
 
-## WARNING
-This is a scaffold for an extreme-optimization system. Review before running. It will wipe the selected disk.
+This repo sets up a **process-aware perf sampler** + a **profile accumulator**:
+
+- `gm-perf-profiler` (system service):
+  - only records perf when a configured trigger process is running (e.g. `steam`, `gamescope`, `java`, `firefox`, etc.)
+  - writes short perf chunks into `/var/lib/gm/perf/chunks/`
+
+- `gm-fdo-accumulate` (timer):
+  - converts perf chunks into **LLVM sample profiles** (`.afdo`-style) using `llvm-profgen`
+  - merges profiles with `llvm-profdata merge -sample`
+  - (optional) generates Propeller profiles if `llvm-propeller` is available
+
+- Portage glue:
+  - `/etc/portage/bashrc` detects installed targets and injects:
+    - ThinLTO, -O3 (for targets), -march=native
+    - `-fprofile-sample-use=` when a profile exists
+    - Propeller flags when propeller profiles exist
+
+Targets are configured in:
+- `files/scripts/gm-fdo-targets.conf` (package atoms, binaries, triggers)
+
+---
+
+## After install: re-optimize workflow
+
+If Plasma is installed you get a launcher:
+
+- **Golden Master: Re-optimize now** (desktop shortcut)
+  - runs accumulation
+  - then rebuilds only the installed targets that have profiles
+
+You can also run in a terminal:
+
+```bash
+sudo gm-optimize
+```
+
+---
+
+## Notes / expectations
+
+- **Profiling tiny libs (like GLFW)** is technically possible *if your workload is actually using the system library*. Minecraft usually ships LWJGL natives; unless you force it to use the system `libglfw.so`, recompiling `media-libs/glfw` will have little impact.
+- Kernel AutoFDO/Propeller is possible, but not “turnkey” on Gentoo for every custom source tree. This repo ships a safe bootable path and leaves kernel FDO as an optional advanced step.
+
+---
+
+## Layout
+
+```
+golden-master/
+  install.sh
+  lib/
+  modules/
+  chroot/
+  files/
+```
+
+Everything is modular; each module is a bash file with a `run()` function.
+
