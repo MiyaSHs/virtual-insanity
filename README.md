@@ -1,4 +1,4 @@
-# golden-master (Gentoo extreme optimization scaffold)
+# virtual-insanity (Gentoo extreme optimization scaffold)
 
 This is a modular Gentoo installer intended to be run from the Gentoo live USB (UEFI) and produce:
 - systemd + systemd-boot
