@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Golden Master Java runtime tuning.
+# Writes a conservative, validated JAVA_TOOL_OPTIONS block into /etc/environment,
+# so Java games/apps (including Minecraft) inherit it automatically.
+
+log() { echo "[gm-java] $*"; }
+
+JAVA="${JAVA:-$(command -v java || true)}"
+[[ -n "${JAVA:-}" ]] || exit 0
+
+ENV_FILE="${ENV_FILE:-/etc/environment}"
+BEGIN_MARK="# BEGIN GOLDEN MASTER JAVA"
+END_MARK="# END GOLDEN MASTER JAVA"
+
+mem_kib=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+mem_gib=$(( (mem_kib + 1024*1024 - 1) / (1024*1024) ))
+
+supports_flag() {
+  local flag="$1"
+  timeout 8s "$JAVA" $flag -version >/dev/null 2>&1
+}
+
+flags=()
+
+# GC choice: ZGC for smoother frame-times if available and RAM is decent, else G1.
+if (( mem_gib >= 16 )) && supports_flag "-XX:+UseZGC"; then
+  flags+=("-XX:+UseZGC")
+elif supports_flag "-XX:+UseShenandoahGC"; then
+  flags+=("-XX:+UseShenandoahGC")
+else
+  flags+=("-XX:+UseG1GC")
+fi
+
+# Low-pause / steady allocations (only if supported)
+supports_flag "-XX:+AlwaysPreTouch" && (( mem_gib >= 16 )) && flags+=("-XX:+AlwaysPreTouch")
+supports_flag "-XX:+UseTransparentHugePages" && flags+=("-XX:+UseTransparentHugePages")
+supports_flag "-XX:+UnlockDiagnosticVMOptions" && flags+=("-XX:+UnlockDiagnosticVMOptions")
+supports_flag "-XX:+UseVectorCmov" && flags+=("-XX:+UseVectorCmov")
+
+# Compact object headers are experimental and may not exist on all builds
+if supports_flag "-XX:+UnlockExperimentalVMOptions" && supports_flag "-XX:+UseCompactObjectHeaders"; then
+  flags+=("-XX:+UnlockExperimentalVMOptions" "-XX:+UseCompactObjectHeaders")
+fi
+
+# LWJGL/GLFW helper property (Wayland/EGL function checks)
+props=(
+  "-Dorg.lwjgl.glfw.checkEglFunctions=true"
+)
+
+# GraalVM-only knobs (only enable if it actually looks like GraalVM)
+if "$JAVA" -version 2>&1 | grep -qi "graalvm"; then
+  props+=(
+    "-Dgraal.LoopRotation=true"
+    "-Dgraal.TuneInlinerExploration=1"
+  )
+fi
+
+opts="${flags[*]} ${props[*]}"
+opts="$(echo "$opts" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+
+# Rewrite /etc/environment idempotently
+tmp="$(mktemp)"
+if [[ -f "$ENV_FILE" ]]; then
+  cp -f "$ENV_FILE" "$tmp"
+else
+  : > "$tmp"
+fi
+
+# Remove existing block if present
+awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+  $0==b {skip=1; next}
+  $0==e {skip=0; next}
+  skip!=1 {print}
+' "$tmp" > "${tmp}.clean"
+mv -f "${tmp}.clean" "$tmp"
+
+{
+  echo "$BEGIN_MARK"
+  echo "JAVA_TOOL_OPTIONS=\"${opts}\""
+  echo "$END_MARK"
+} >> "$tmp"
+
+install -m 0644 "$tmp" "$ENV_FILE"
+rm -f "$tmp"
+
+log "JAVA_TOOL_OPTIONS updated in ${ENV_FILE}"
+log "Active flags: ${opts}"

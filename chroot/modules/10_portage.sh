@@ -3,6 +3,8 @@ set -euo pipefail
 source "$GM_ROOT_DIR/lib/common.sh"
 source "$GM_ROOT_DIR/lib/hw.sh"
 
+has_bin() { [[ " ${GM_BINPKGS:-} " == *" $1 "* ]]; }
+
 write_makeconf() {
   local gpu
   gpu=$(detect_gpu_vendor || echo unknown)
@@ -87,6 +89,59 @@ EOF
   emaint sync -a || emerge --sync
 }
 
+install_toolchain() {
+  local -a pkgs=()
+
+  if has_bin llvm-bin; then
+    pkgs+=(sys-devel/llvm-bin sys-devel/clang-bin sys-devel/lld-bin)
+  else
+    pkgs+=(sys-devel/llvm sys-devel/clang sys-devel/lld)
+  fi
+
+  # Rust (huge build-time dependency for browsers and modern stacks)
+  if has_bin rust-bin; then
+    pkgs+=(dev-lang/rust-bin)
+  else
+    # only install rust source if you really want it; portage will pull rust-bin as bootstrap anyway
+    pkgs+=(dev-lang/rust)
+  fi
+
+  emerge --quiet-build=y "${pkgs[@]}" || true
+}
+
+install_java() {
+  [[ "${GM_ENABLE_JAVA:-no}" == "yes" ]] || return 0
+
+  local impl="${GM_JAVA_IMPL:-openjdk}"
+
+  if [[ "$impl" == "graalvm" ]]; then
+    # Try common atoms; fall back to OpenJDK if unavailable.
+    if emerge -p dev-java/graalvm-bin >/dev/null 2>&1; then
+      emerge --quiet-build=y dev-java/graalvm-bin || true
+    elif emerge -p dev-java/graalvm >/dev/null 2>&1; then
+      emerge --quiet-build=y dev-java/graalvm || true
+    else
+      warn "GraalVM not found in repos; falling back to OpenJDK."
+      impl="openjdk"
+    fi
+  fi
+
+  if [[ "$impl" == "openjdk" ]]; then
+    local pkg="dev-java/openjdk"
+    if has_bin openjdk-bin; then
+      pkg="dev-java/openjdk-bin"
+    fi
+    emerge --quiet-build=y "${pkg}" || true
+  fi
+
+  # Pick a system VM if possible
+  if command -v eselect >/dev/null 2>&1 && eselect java-vm list >/dev/null 2>&1; then
+    local idx
+    idx=$(eselect java-vm list | awk '/openjdk|graalvm/ {gsub(/[\[\]]/,"",$1); i=$1} END{print i}' 2>/dev/null || true)
+    [[ -n "${idx:-}" ]] && eselect java-vm set system "$idx" >/dev/null 2>&1 || true
+  fi
+}
+
 run() {
   log "Configuring Portage and base packages…"
 
@@ -95,8 +150,9 @@ run() {
   enable_repos
 
   log "Installing toolchain + utilities…"
+  install_toolchain
+
   emerge --quiet-build=y \
-    sys-devel/llvm sys-devel/clang sys-devel/lld \
     app-portage/gentoolkit app-portage/eix \
     app-misc/cpuid2cpuflags \
     sys-fs/dosfstools sys-fs/cryptsetup sys-fs/btrfs-progs sys-fs/xfsprogs \
@@ -115,6 +171,11 @@ media-video/pipewire sound-server
 media-video/wireplumber
 media-libs/mesa vulkan wayland
 EOF
+
+  # Install Java + runtime tuning helper if requested
+  install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-java-tune" /usr/local/bin/gm-java-tune
+  install_java
+  /usr/local/bin/gm-java-tune || true
 
   eix-update || true
   log "Portage configured."

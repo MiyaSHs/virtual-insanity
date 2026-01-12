@@ -33,17 +33,18 @@ active_triggers() {
 
 choose_perf_args() {
   # Prefer LBR/branch stacks when supported; fallback to dwarf.
-  # LBR is CPU/PMU dependent; errors should fall back cleanly.
+  # We probe using a temp output file to avoid clobbering the real chunk path.
   local hz="${GM_PERF_SAMPLE_HZ}"
-  local dur="${GM_PERF_DURATION_SEC}"
-  local out="$1"
-
-  # Try: cycles:u + branch stacks
-  if perf record -q -o "$out" -F "$hz" -e cycles:u -j any,u -- sleep 1 >/dev/null 2>&1; then
+  local out_real="$1"
+  local probe
+  probe="$(mktemp --suffix=.perfprobe)"
+  # Try: cycles:u + branch stacks (LBR/BRS/etc)
+  if perf record -q -o "$probe" -F "$hz" -e cycles:u -j any,u -- sleep 1 >/dev/null 2>&1; then
+    rm -f "$probe" || true
     echo "-F ${hz} -e cycles:u -j any,u"
     return 0
   fi
-
+  rm -f "$probe" || true
   # Try: cycles:u + dwarf callgraph
   echo "-F ${hz} -e cycles:u --call-graph dwarf,16384"
 }

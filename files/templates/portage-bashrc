@@ -19,18 +19,6 @@ gm_is_target_atom() {
   return 1
 }
 
-gm_target_name_for_atom() {
-  local atom="$1"
-  local entry
-  for entry in "${GM_TARGETS[@]:-}"; do
-    IFS='|' read -r _name _atom _bin _triggers <<<"$entry"
-    if [[ "$_atom" == "$atom" ]]; then
-      echo "$_name"; return 0
-    fi
-  done
-  echo ""
-}
-
 gm_apply_flags() {
   local atom="${CATEGORY}/${PN}"
   gm_is_target_atom "$atom" || return 0
@@ -42,6 +30,14 @@ gm_apply_flags() {
   # Baseline: high value flags for “big” targets
   # Note: -O3 is used only for targets, not globally.
   local extra="-O3 -gline-tables-only -fdebug-info-for-profiling -fno-omit-frame-pointer -flto=thin"
+
+  # Safety rails for a few fragile atoms (keeps installer hands-free).
+  case "$atom" in
+    sys-libs/glibc)
+      # glibc + clang + LTO is a frequent footgun; keep it conservative.
+      extra="-O2 -gline-tables-only -fdebug-info-for-profiling -fno-omit-frame-pointer"
+      ;;
+  esac
 
   if [[ -f "$afdo" ]]; then
     extra+=" -fprofile-sample-use=${afdo}"

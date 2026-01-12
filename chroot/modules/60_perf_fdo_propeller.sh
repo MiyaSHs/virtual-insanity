@@ -17,6 +17,7 @@ install_scripts() {
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-fdo-accumulate" /usr/local/bin/gm-fdo-accumulate
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-optimize" /usr/local/bin/gm-optimize
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-portage-env-apply" /usr/local/bin/gm-portage-env-apply
+  install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-java-tune" /usr/local/bin/gm-java-tune
   install -Dm644 "$GM_ROOT_DIR/files/scripts/gm-fdo-targets.conf" /etc/gm-fdo-targets.conf
 }
 
@@ -43,6 +44,9 @@ run() {
 
   # Build portage env mapping
   /usr/local/bin/gm-portage-env-apply || true
+
+  # Ensure Java tuning block exists if Java is installed
+  /usr/local/bin/gm-java-tune || true
 
   log "Perf/FDO pipeline installed."
 }

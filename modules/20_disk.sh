@@ -21,7 +21,8 @@ run() {
   partprobe "$disk" || true
 
   local p1 p2
-  if [[ "$disk" =~ nvme ]]; then
+  # nvme0n1, mmcblk0, loop0 and any disk ending with a digit use p1/p2
+  if [[ "$disk" =~ nvme || "$disk" =~ mmcblk || "$disk" =~ loop || "$disk" =~ [0-9]$ ]]; then
     p1="${disk}p1"; p2="${disk}p2"
   else
     p1="${disk}1"; p2="${disk}2"

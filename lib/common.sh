@@ -29,6 +29,16 @@ is_uefi_boot() {
   [[ -d /sys/firmware/efi/efivars ]]
 }
 
+gm_list_contains() {
+  # Usage: gm_list_contains "a b c" "b"
+  local list="${1:-}" needle="${2:-}"
+  local x
+  for x in $list; do
+    [[ "$x" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
 load_state() {
   local f="${GM_STATE_DIR}/gm.conf"
   [[ -f "$f" ]] || die "Missing state file $f"
@@ -56,4 +66,3 @@ chroot_run() {
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     "$@"
 }
-

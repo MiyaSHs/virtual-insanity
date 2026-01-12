@@ -6,6 +6,8 @@ source "$GM_ROOT_DIR/lib/hw.sh"
 uuid_of() { blkid -s UUID -o value "$1"; }
 partuuid_of() { blkid -s PARTUUID -o value "$1"; }
 
+has_bin() { [[ " ${GM_BINPKGS:-} " == *" $1 "* ]]; }
+
 write_fstab() {
   local efi_part="$GM_EFI_PART"
   local rootdev="$GM_ROOTDEV"
@@ -91,8 +93,12 @@ run() {
     intel) emerge --quiet-build=y sys-firmware/intel-microcode || true ;;
   esac
 
-  # Bootable kernel (fast path)
-  emerge --quiet-build=y sys-kernel/gentoo-kernel-bin || die "Kernel install failed."
+  # Bootable kernel package (fast fallback if chosen)
+  local kernel_pkg="sys-kernel/gentoo-kernel-bin"
+  if ! has_bin kernel-bin; then
+    kernel_pkg="sys-kernel/gentoo-kernel"
+  fi
+  emerge --quiet-build=y "${kernel_pkg}" || die "Kernel install failed."
   setup_dracut
 
   # Build initramfs for the latest installed kernel
@@ -136,8 +142,14 @@ EOF
   if [[ "$GM_ENCRYPTION" == "luks_tpm" || "$GM_ENCRYPTION" == "luks_pass" ]]; then
     local luks_uuid
     luks_uuid=$(uuid_of "$GM_LUKS_DEV")
+
+    local opts="-"
+    if [[ "$GM_ENCRYPTION" == "luks_tpm" ]]; then
+      opts="tpm2-device=auto"
+    fi
+
     cat > /etc/crypttab <<EOF
-${GM_LUKS_NAME} UUID=${luks_uuid} - tpm2-device=auto
+${GM_LUKS_NAME} UUID=${luks_uuid} - ${opts}
 EOF
   fi
 

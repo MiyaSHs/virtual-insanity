@@ -1,45 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$GM_ROOT_DIR/lib/common.sh"
-source "$GM_ROOT_DIR/lib/hw.sh"
 
 try_tpm_enroll() {
-  [[ "${GM_ENCRYPTION}" == "luks_tpm" ]] || return 0
+  [[ "$GM_ENCRYPTION" == "luks_tpm" ]] || return 0
   command -v systemd-cryptenroll >/dev/null 2>&1 || return 0
-  [[ -b "${GM_LUKS_DEV:-}" ]] || return 0
+  [[ -b "$GM_LUKS_DEV" ]] || return 0
 
-  log "Enrolling TPM2 auto-unlock for ${GM_LUKS_DEV}…"
-  if secure_boot_enabled; then
-    # PCR7 is SecureBoot policy. Good if SB enabled.
-    systemd-cryptenroll "${GM_LUKS_DEV}" --tpm2-device=auto --tpm2-pcrs=7 || true
+  log "Enrolling TPM2 key for LUKS device (stable mode)…"
+
+  # If Secure Boot is ON, bind to PCR7 (SB state) for stronger security.
+  # If Secure Boot is OFF, bind WITHOUT PCRs to avoid breakage when boot state changes.
+  if mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
+    systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 "$GM_LUKS_DEV" || true
   else
-    # Avoid binding to fragile PCRs when SecureBoot is off.
-    systemd-cryptenroll "${GM_LUKS_DEV}" --tpm2-device=auto --tpm2-without-pcrs 2>/dev/null || \
-      systemd-cryptenroll "${GM_LUKS_DEV}" --tpm2-device=auto || true
+    systemd-cryptenroll --tpm2-device=auto --tpm2-without-pcrs "$GM_LUKS_DEV" || true
   fi
+
+  log "TPM enroll attempted (passphrase remains as fallback)."
 }
 
-drop_plasma_shortcuts() {
-  if [[ "${GM_PROFILE}" == "plasma" || "${GM_PROFILE}" == "gamemode" ]]; then
-    mkdir -p /usr/share/applications
-    install -Dm644 "$GM_ROOT_DIR/files/systemd/user/gm-optimize.desktop" /usr/share/applications/gm-optimize.desktop
-    # Put on Desktop for the user (best-effort)
-    local desk="/home/${GM_USER}/Desktop"
-    mkdir -p "$desk"
-    cp -f /usr/share/applications/gm-optimize.desktop "$desk/Golden-Master-Optimize.desktop" || true
-    chown -R "${GM_USER}:${GM_USER}" "$desk"
-    chmod +x "$desk/Golden-Master-Optimize.desktop" || true
-  fi
+scrub_state_secrets() {
+  # State file contains passwords; remove it from the installed system.
+  rm -f /root/golden-master/gm.conf || true
 }
 
 run() {
-  log "Finalize…"
+  log "Finalizing system…"
 
-  # Basic QoL
-  emerge --quiet-build=y sys-apps/mlocate app-shells/bash-completion || true
-
+  # timezone/locale are handled in base module; keep final tidy-ups here.
   try_tpm_enroll
-  drop_plasma_shortcuts
+
+  # Update Java flags block once more in the installed system
+  if command -v gm-java-tune >/dev/null 2>&1; then
+    gm-java-tune || true
+  fi
+
+  # Ensure systemd-boot doesn't wait on editor
+  mkdir -p /boot/loader
+  sed -i 's/^editor .*/editor no/' /boot/loader/loader.conf 2>/dev/null || true
+
+  scrub_state_secrets
 
   log "Finalize done."
 }

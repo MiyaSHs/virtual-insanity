@@ -34,8 +34,8 @@ case "${GM_PROFILE}" in
   *) die "Unknown profile: $GM_PROFILE" ;;
 esac
 
-if [[ "${GM_DEVICE:-generic}" == "rog_ally" ]]; then
-  run_module "chroot/modules/43_device_rog_ally.sh"
+if [[ "${GM_DEVICE:-generic}" == "hhd" ]]; then
+  run_module "chroot/modules/43_device_hhd.sh"
 fi
 
 run_module "chroot/modules/50_flatpak.sh"

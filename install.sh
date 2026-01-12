@@ -31,4 +31,11 @@ run_module "modules/20_disk.sh"
 run_module "modules/30_stage3.sh"
 run_module "modules/40_chroot_enter.sh"
 
+# Scrub secrets from live environment
+if [[ -f "$GM_STATE_DIR/gm.conf" ]]; then
+  chmod 600 "$GM_STATE_DIR/gm.conf" || true
+  shred -u "$GM_STATE_DIR/gm.conf" 2>/dev/null || rm -f "$GM_STATE_DIR/gm.conf" || true
+fi
+rmdir "$GM_STATE_DIR" 2>/dev/null || true
+
 log "Install completed. You can reboot into the new system."
