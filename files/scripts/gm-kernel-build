@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Build + install the currently selected kernel sources under /usr/src/linux,
+# updating a stable systemd-boot entry (/boot/loader/entries/gentoo.conf).
+set -euo pipefail
+
+PROFILE_DIR="${GM_PROFILE_DIR:-/var/lib/gm/profiles}"
+KKEY="sys-kernel-cachyos-sources"
+AFDO="$PROFILE_DIR/${KKEY}.afdo"
+PPRE="$PROFILE_DIR/${KKEY}_propeller"
+
+SRC="/usr/src/linux"
+[[ -d "$SRC" ]] || { echo "No /usr/src/linux; nothing to build" >&2; exit 0; }
+
+cd "$SRC"
+
+# Ensure .config exists (cachyos-sources sets it during ebuild prepare).
+if [[ ! -f .config ]]; then
+  echo "Kernel .config missing; run 'emerge sys-kernel/cachyos-sources' first" >&2
+  exit 1
+fi
+
+export LLVM=1
+export LLVM_IAS=1
+export CC=clang
+export LD=ld.lld
+
+# AutoFDO / Propeller (best-effort)
+if [[ -f "$AFDO" ]]; then
+  export CLANG_AUTOFDO_PROFILE="$AFDO"
+fi
+if [[ -f "${PPRE}_cc_profile.txt" && -f "${PPRE}_ld_profile.txt" ]]; then
+  export CLANG_PROPELLER_PROFILE_PREFIX="$PPRE"
+fi
+
+echo "[gm] kernel build: LLVM=1 AutoFDO=$([[ -f "$AFDO" ]] && echo yes || echo no) Propeller=$([[ -f "${PPRE}_cc_profile.txt" ]] && echo yes || echo no)" >&2
+
+make -s olddefconfig
+KVER=$(make -s kernelrelease)
+
+make -j"$(nproc)" -s
+make -s modules_install
+make -s install
+
+# Ensure an initramfs exists (installkernel+dracut usually does this, but keep a fallback).
+if [[ ! -f "/boot/initramfs-${KVER}.img" ]]; then
+  if command -v dracut >/dev/null 2>&1; then
+    dracut --kver "$KVER" --force "/boot/initramfs-${KVER}.img" || true
+  fi
+fi
+
+# Stable entry name for fast boot (SteamOS-style)
+mkdir -p /boot/loader/entries
+cat > /boot/loader/entries/gentoo.conf <<EOF
+title   Gentoo (latest)
+linux   /vmlinuz-${KVER}
+initrd  /initramfs-${KVER}.img
+options $(cat /etc/kernel/cmdline 2>/dev/null || echo "quiet")
+EOF
+
+cat > /boot/loader/entries/gentoo-fallback.conf <<EOF
+title   Gentoo (fallback)
+linux   /vmlinuz-${KVER}
+initrd  /initramfs-${KVER}.img
+options $(cat /etc/kernel/cmdline 2>/dev/null || echo "quiet") systemd.log_level=warning
+EOF
+
+echo "$KVER" > /var/lib/gm/.last_kernel_built 2>/dev/null || true
+echo "[gm] kernel installed: $KVER" >&2

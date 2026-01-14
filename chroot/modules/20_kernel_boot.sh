@@ -4,9 +4,43 @@ source "$GM_ROOT_DIR/lib/common.sh"
 source "$GM_ROOT_DIR/lib/hw.sh"
 
 uuid_of() { blkid -s UUID -o value "$1"; }
-partuuid_of() { blkid -s PARTUUID -o value "$1"; }
 
-has_bin() { [[ " ${GM_BINPKGS:-} " == *" $1 "* ]]; }
+# --- helpers ---------------------------------------------------------------
+
+use_supported_in_atom() {
+  # Best-effort: check if a USE flag exists for an atom (gentoolkit needed).
+  # Returns 0 if supported, 1 otherwise.
+  local atom="$1" flag="$2"
+  equery -q uses "$atom" 2>/dev/null | awk '{print $1}' | sed 's/^[+-]//' | grep -qx "$flag"
+}
+
+append_pkg_use() {
+  local atom="$1"; shift
+  local out=/etc/portage/package.use/gm-kernel
+  mkdir -p /etc/portage/package.use
+  echo "$atom $*" >> "$out"
+}
+
+write_cmdline() {
+  local fs="$GM_FS"
+  local rootarg cryptarg subvol
+
+  cryptarg=""
+  if [[ "$GM_ENCRYPTION" == "luks_tpm" || "$GM_ENCRYPTION" == "luks_pass" ]]; then
+    rootarg="root=/dev/mapper/${GM_LUKS_NAME}"
+    cryptarg="rd.luks.uuid=$(uuid_of "$GM_LUKS_DEV")"
+  else
+    rootarg="root=UUID=$(uuid_of "$GM_ROOTDEV")"
+  fi
+
+  subvol=""
+  [[ "$fs" == "btrfs" ]] && subvol="rootflags=subvol=@"
+
+  mkdir -p /etc/kernel
+  cat > /etc/kernel/cmdline <<EOF
+quiet splash ${cryptarg} ${rootarg} ${subvol} rw
+EOF
+}
 
 write_fstab() {
   local efi_part="$GM_EFI_PART"
@@ -31,29 +65,21 @@ write_fstab() {
   fi
 }
 
-write_cmdline() {
-  local fs="$GM_FS"
-  local rootarg
-  local cryptarg=""
-  if [[ "$GM_ENCRYPTION" == "luks_tpm" || "$GM_ENCRYPTION" == "luks_pass" ]]; then
-    rootarg="root=/dev/mapper/${GM_LUKS_NAME}"
-    cryptarg="rd.luks.uuid=$(uuid_of "$GM_LUKS_DEV")"
-  else
-    rootarg="root=UUID=$(uuid_of "$GM_ROOTDEV")"
-  fi
+setup_installkernel_dracut() {
+  log "Installing installkernel + dracut (systemd-boot layout)"
+  mkdir -p /etc/portage/package.use
+  # systemd system installs: require systemd-boot layout for BLS.
+  echo "sys-kernel/installkernel systemd systemd-boot dracut" >> /etc/portage/package.use/gm-installkernel
+  emerge --quiet-build=y sys-kernel/installkernel sys-kernel/dracut || die "installkernel/dracut install failed"
 
-  local subvol=""
-  if [[ "$fs" == "btrfs" ]]; then
-    subvol="rootflags=subvol=@"
-  fi
-
-  cat > /etc/kernel/cmdline <<EOF
-quiet splash ${cryptarg} ${rootarg} ${subvol} rw
+  mkdir -p /etc/kernel
+  cat > /etc/kernel/install.conf <<'EOF'
+# Managed by golden-master.
+layout=bls
+initrd_generator=dracut
+uki_generator=none
 EOF
-}
 
-setup_dracut() {
-  emerge --quiet-build=y sys-kernel/dracut sys-kernel/installkernel || true
   mkdir -p /etc/dracut.conf.d
   cat > /etc/dracut.conf.d/00-gm.conf <<'EOF'
 hostonly=yes
@@ -76,6 +102,157 @@ swap-priority = 100
 EOF
 }
 
+setup_systemd_boot() {
+  log "Installing systemd-boot"
+  bootctl install || die "bootctl install failed"
+
+  mkdir -p /boot/loader
+  cat > /boot/loader/loader.conf <<EOF
+default gentoo.conf
+timeout $( [[ "${GM_PROFILE}" == "gamemode" ]] && echo 0 || echo 3 )
+console-mode auto
+editor no
+EOF
+}
+
+setup_crypttab() {
+  if [[ "$GM_ENCRYPTION" == "luks_tpm" || "$GM_ENCRYPTION" == "luks_pass" ]]; then
+    local luks_uuid
+    luks_uuid=$(uuid_of "$GM_LUKS_DEV")
+
+    local opts="-"
+    [[ "$GM_ENCRYPTION" == "luks_tpm" ]] && opts="tpm2-device=auto"
+
+    cat > /etc/crypttab <<EOF
+${GM_LUKS_NAME} UUID=${luks_uuid} - ${opts}
+EOF
+  fi
+}
+
+install_kernel() {
+  local strat="${GM_KERNEL_STRATEGY:-gentoo-bin}"
+  case "$strat" in
+    gentoo-bin)
+      log "Kernel: gentoo-kernel-bin"
+      emerge --quiet-build=y sys-kernel/gentoo-kernel-bin || die "Kernel install failed"
+      ;;
+    gentoo-src)
+      log "Kernel: gentoo-kernel (compile)"
+      emerge --quiet-build=y sys-kernel/gentoo-kernel || die "Kernel install failed"
+      ;;
+    cachyos)
+      log "Kernel: cachyos-sources (compile via gm-kernel-build)"
+
+      # Keywords/use flags (the package is ~amd64 in overlays).
+      mkdir -p /etc/portage/package.accept_keywords
+      echo "sys-kernel/cachyos-sources ~amd64" >> /etc/portage/package.accept_keywords/gm-kernel
+
+      # Build a safe set of USE flags while respecting REQUIRED_USE.
+      # We *always* choose exactly one scheduler + one HZ + one tickrate + one preempt.
+      local atom="sys-kernel/cachyos-sources"
+      local -a flags=()
+
+      # Schedulers: prefer BORE (gaming smoothness)
+      flags+=(bore -bmq -rt -rt-bore -eevdf)
+
+      # LTO + FDO + Propeller
+      flags+=(autofdo propeller -llvm-lto-full)
+      # Prefer llvm-lto-thin-dist when supported (good integration with installkernel layouts)
+      if use_supported_in_atom "$atom" "llvm-lto-thin-dist"; then
+        flags+=(llvm-lto-thin-dist -llvm-lto-thin)
+      else
+        flags+=(llvm-lto-thin -llvm-lto-thin-dist)
+      fi
+
+      # Tick/preempt choices
+      flags+=(hz_ticks_1000 tickrate_full preempt_full)
+
+      # Kernel O3 variant if exposed
+      flags+=(o3 -os -debug)
+
+      # THP default
+      flags+=(hugepage_always -hugepage_madvise)
+
+      # Misc performance defaults
+      flags+=(bbr3 per-gov)
+
+      # Deckify is only meaningful for handheld/game mode
+      if [[ "${GM_PROFILE}" == "gamemode" || "${GM_DEVICE:-generic}" == "hhd" ]]; then
+        use_supported_in_atom "$atom" "deckify" && flags+=(deckify)
+      fi
+
+      # CPU tuning: avoid REQUIRED_USE conflicts by explicitly disabling all known choices
+      # and then enabling the best supported one.
+      for f in mgeneric mgeneric_v1 mgeneric_v2 mgeneric_v3 mgeneric_v4 mzen4 mnative mnative_amd mnative_intel; do
+        use_supported_in_atom "$atom" "$f" && flags+=("-$f")
+      done
+
+      local micro=""
+      case "$(detect_cpu_vendor)" in
+        amd)
+          use_supported_in_atom "$atom" "mnative_amd" && micro="mnative_amd"
+          ;;
+        intel)
+          use_supported_in_atom "$atom" "mnative_intel" && micro="mnative_intel"
+          ;;
+      esac
+      if [[ -z "$micro" ]] && use_supported_in_atom "$atom" "mnative"; then
+        micro="mnative"
+      fi
+      [[ -n "$micro" ]] && flags+=("$micro")
+
+      # If available, keep CachyOS auto-tuning enabled as well (not necessarily mutually-exclusive).
+      use_supported_in_atom "$atom" "auto-cpu-optimization" && flags+=(auto-cpu-optimization)
+
+      # Convenience flags if present
+      use_supported_in_atom "$atom" "symlink" && flags+=(symlink)
+
+      # Finally write package.use line
+      append_pkg_use "$atom" "${flags[*]}"
+
+      emerge --quiet-build=y sys-kernel/cachyos-sources || die "cachyos-sources install failed"
+
+      # Ensure /usr/src/linux is present and points to the newly installed sources.
+      if [[ ! -e /usr/src/linux ]]; then
+        local latest
+        latest=$(ls -1d /usr/src/linux-* 2>/dev/null | sort -V | tail -n 1 || true)
+        [[ -n "$latest" ]] && ln -s "$latest" /usr/src/linux || true
+      fi
+
+      # Install kernel build helpers + enable autobuild timer
+      install -D -m 0755 "$GM_ROOT_DIR/files/scripts/gm-kernel-build" /usr/local/sbin/gm-kernel-build
+      install -D -m 0755 "$GM_ROOT_DIR/files/scripts/gm-kernel-autobuild" /usr/local/sbin/gm-kernel-autobuild
+      install -D -m 0644 "$GM_ROOT_DIR/files/systemd/system/gm-kernel-autobuild.service" /etc/systemd/system/gm-kernel-autobuild.service
+      install -D -m 0644 "$GM_ROOT_DIR/files/systemd/system/gm-kernel-autobuild.timer" /etc/systemd/system/gm-kernel-autobuild.timer
+      systemctl enable gm-kernel-autobuild.timer || true
+
+      # Build once now (uses current profiles if any)
+      /usr/local/sbin/gm-kernel-build || die "Initial CachyOS kernel build failed"
+      ;;
+    *)
+      die "Unknown GM_KERNEL_STRATEGY='$strat'"
+      ;;
+  esac
+}
+
+maybe_enable_scx() {
+  [[ "${GM_ENABLE_SCX:-no}" == "yes" ]] || return 0
+  log "sched_ext (scx): attempting to install scx_lavd stack"
+
+  # Best-effort: if sys-kernel/scx exists in enabled repos, install it.
+  if emerge -p sys-kernel/scx >/dev/null 2>&1; then
+    emerge --quiet-build=y sys-kernel/scx || true
+  fi
+
+  # If scx_lavd is present, enable a service.
+  if command -v scx_lavd >/dev/null 2>&1; then
+    install -D -m 0644 "$GM_ROOT_DIR/files/systemd/system/scx-lavd.service" /etc/systemd/system/scx-lavd.service
+    systemctl enable scx-lavd.service || true
+  else
+    log "scx_lavd not available; skipping enable (you can add a scx package later)."
+  fi
+}
+
 run() {
   log "Kernel + bootloader setup…"
 
@@ -85,7 +262,6 @@ run() {
 
   # Networking (NetworkManager, optionally with iwd backend)
   if [[ "${GM_WIFI_BACKEND:-wpa}" == "iwd" ]]; then
-    # Ensure NetworkManager is built with iwd support
     mkdir -p /etc/portage/package.use
     echo "net-misc/networkmanager iwd" >> /etc/portage/package.use/gm-networkmanager
     emerge --quiet-build=y net-wireless/iwd net-misc/networkmanager || true
@@ -94,7 +270,6 @@ run() {
 [device]
 wifi.backend=iwd
 EOF
-    # Do not let iwd manage DHCP itself (NM should own config)
     mkdir -p /etc/iwd
     cat > /etc/iwd/main.conf <<'EOF'
 [General]
@@ -120,67 +295,26 @@ EOF
     intel) emerge --quiet-build=y sys-firmware/intel-microcode || true ;;
   esac
 
-  # Bootable kernel package (fast fallback if chosen)
-  local kernel_pkg="sys-kernel/gentoo-kernel-bin"
-  if ! has_bin kernel-bin; then
-    kernel_pkg="sys-kernel/gentoo-kernel"
-  fi
-  emerge --quiet-build=y "${kernel_pkg}" || die "Kernel install failed."
-  setup_dracut
+  # installkernel + dracut integration for BLS/systemd-boot
+  setup_installkernel_dracut
 
-  # Build initramfs for the latest installed kernel
-  local kver
-  kver=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -n1 || true)
-  if [[ -n "$kver" ]]; then
-    dracut -f "/boot/initramfs-${kver}.img" "$kver" || true
-  fi
+  # Kernel install/build
+  install_kernel
 
-  mkdir -p /etc/kernel
+  # Ensure /etc/kernel/cmdline exists for kernel-install (BLS)
   write_cmdline
 
-  # Install systemd-boot
-  bootctl install || die "bootctl install failed."
-  mkdir -p /boot/loader
-  cat > /boot/loader/loader.conf <<EOF
-default gentoo.conf
-timeout $( [[ "${GM_PROFILE}" == "gamemode" ]] && echo 0 || echo 3 )
-console-mode auto
-editor no
-EOF
+  # Install bootloader and minimal config
+  setup_systemd_boot
 
-  # installkernel should create BLS entries; ensure one exists
-  if [[ ! -f /boot/loader/entries/gentoo.conf ]]; then
-    # create a simple entry pointing to the latest vmlinuz
-    local kimg initrd
-    kimg=$(ls -1 /boot/vmlinuz-* 2>/dev/null | tail -n1 || true)
-    initrd=$(ls -1 /boot/initramfs-* 2>/dev/null | tail -n1 || true)
-    [[ -n "$kimg" ]] || die "Kernel image not found in /boot"
-    cat > /boot/loader/entries/gentoo.conf <<EOF
-title   Gentoo (Golden Master)
-linux   $(basename "$kimg")
-initrd  $(basename "$initrd")
-options $(cat /etc/kernel/cmdline)
-EOF
-  fi
-
+  # Write fstab + crypttab
   write_fstab
-
-  # crypttab for systemd in initramfs
-  if [[ "$GM_ENCRYPTION" == "luks_tpm" || "$GM_ENCRYPTION" == "luks_pass" ]]; then
-    local luks_uuid
-    luks_uuid=$(uuid_of "$GM_LUKS_DEV")
-
-    local opts="-"
-    if [[ "$GM_ENCRYPTION" == "luks_tpm" ]]; then
-      opts="tpm2-device=auto"
-    fi
-
-    cat > /etc/crypttab <<EOF
-${GM_LUKS_NAME} UUID=${luks_uuid} - ${opts}
-EOF
-  fi
+  setup_crypttab
 
   setup_zram
+
+  # sched_ext userspace scheduler (optional)
+  maybe_enable_scx
 
   log "Kernel/boot configured."
 }

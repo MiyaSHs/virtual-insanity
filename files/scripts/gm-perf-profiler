@@ -1,67 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Process-aware perf sampler.
-# Records perf data only while target triggers are running.
+# Process-aware trigger, system-wide capture:
+# When any "trigger" process is running, we record a short perf chunk with
+# branch stacks so llvm-profgen/create_llvm_prof can build AutoFDO/Propeller profiles.
 
-[[ -r /etc/gm-fdo-targets.conf ]] && source /etc/gm-fdo-targets.conf
+CONF="/etc/gm-fdo-targets.conf"
+[[ -f "$CONF" ]] || { echo "Missing $CONF" >&2; exit 1; }
+
+# shellcheck disable=SC1090
+source "$CONF"
+
+GM_PERF_DIR="${GM_PERF_DIR:-/var/lib/gm/perf}"
+GM_PERF_DURATION_SEC="${GM_PERF_DURATION_SEC:-600}"
+GM_PERF_SLEEP_SEC="${GM_PERF_SLEEP_SEC:-60}"
+
+mkdir -p "$GM_PERF_DIR/chunks"
 
 log() { echo "[gm-perf] $*"; }
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing $1" >&2; exit 1; }; }
-
-need perf
-need pgrep
-need date
-
-mkdir -p "${GM_PERF_DIR}/chunks"
-chmod 700 "${GM_PERF_DIR}/chunks"
-
-active_triggers() {
-  local entry
+triggers_any_running() {
   for entry in "${GM_TARGETS[@]:-}"; do
-    IFS='|' read -r _name _atom _bin _triggers <<<"$entry"
-    for t in $_triggers; do
-      if pgrep -fa "$t" >/dev/null 2>&1; then
-        echo "$t"
-        return 0
-      fi
+    IFS='|' read -r _name _atom _glob triggers <<<"$entry"
+    for t in $triggers; do
+      pgrep -x "$t" >/dev/null 2>&1 && return 0
     done
   done
   return 1
 }
 
-choose_perf_args() {
-  # Prefer LBR/branch stacks when supported; fallback to dwarf.
-  # We probe using a temp output file to avoid clobbering the real chunk path.
-  local hz="${GM_PERF_SAMPLE_HZ}"
-  local out_real="$1"
-  local probe
-  probe="$(mktemp --suffix=.perfprobe)"
-  # Try: cycles:u + branch stacks (LBR/BRS/etc)
-  if perf record -q -o "$probe" -F "$hz" -e cycles:u -j any,u -- sleep 1 >/dev/null 2>&1; then
-    rm -f "$probe" || true
-    echo "-F ${hz} -e cycles:u -j any,u"
-    return 0
+choose_perf_cmd() {
+  # Prefer libpfm-based portable event naming when available.
+  if perf record --help 2>&1 | grep -q -- '--pfm-events'; then
+    # Branch stacks (-b) are important for Propeller; -N avoids symbolization overhead.
+    echo "perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009"
+  else
+    # Fallback: sample cycles + LBR callchain + branch stack.
+    echo "perf record -e cycles -a -j any -g --call-graph lbr,8"
   fi
-  rm -f "$probe" || true
-  # Try: cycles:u + dwarf callgraph
-  echo "-F ${hz} -e cycles:u --call-graph dwarf,16384"
 }
 
-while true; do
-  if trig=$(active_triggers); then
-    ts="$(date +%Y%m%d-%H%M%S)"
-    out="${GM_PERF_DIR}/chunks/perf-${ts}.data"
-    args="$(choose_perf_args "$out")"
-    log "Trigger active (${trig}). Recording ${GM_PERF_DURATION_SEC}s to ${out}…"
-    # System-wide record for simplicity; limited to active window
-    perf record -q -o "$out" $args -a -- sleep "${GM_PERF_DURATION_SEC}" || true
-    # Optional compress
-    if command -v zstd >/dev/null 2>&1; then
-      zstd -q -f -1 "$out" -o "${out}.zst" && rm -f "$out" || true
+main() {
+  local cmd
+  cmd=$(choose_perf_cmd)
+  log "Using: $cmd"
+
+  while true; do
+    if triggers_any_running; then
+      local ts out
+      ts=$(date +%s)
+      out="$GM_PERF_DIR/chunks/chunk_${ts}.data"
+      log "Triggers active; recording $GM_PERF_DURATION_SEC s -> $out"
+      # shellcheck disable=SC2086
+      $cmd -o "$out" -- sleep "$GM_PERF_DURATION_SEC" || {
+        rm -f "$out" 2>/dev/null || true
+        log "perf failed; will retry"
+      }
+      sleep "$GM_PERF_SLEEP_SEC"
+    else
+      sleep "$GM_PERF_SLEEP_SEC"
     fi
-  else
-    sleep "${GM_PERF_IDLE_SEC}"
-  fi
-done
+  done
+}
+
+main "$@"

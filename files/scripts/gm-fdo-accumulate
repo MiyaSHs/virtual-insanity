@@ -1,102 +1,90 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ -r /etc/gm-fdo-targets.conf ]] && source /etc/gm-fdo-targets.conf
+CONF="/etc/gm-fdo-targets.conf"
+[[ -f "$CONF" ]] || { echo "Missing $CONF" >&2; exit 1; }
 
-log() { echo "[gm-fdo] $*"; }
-need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing $1" >&2; exit 1; }; }
+# shellcheck disable=SC1090
+source "$CONF"
 
-need llvm-profgen
-need llvm-profdata
+GM_PERF_DIR="${GM_PERF_DIR:-/var/lib/gm/perf}"
+GM_PROFILE_DIR="${GM_PROFILE_DIR:-/var/lib/gm/profiles}"
 
-mkdir -p "${GM_PROFILE_DIR}" "${GM_PERF_DIR}/chunks" "${GM_PERF_DIR}/processed"
-chmod 700 "${GM_PROFILE_DIR}" "${GM_PERF_DIR}/chunks" "${GM_PERF_DIR}/processed"
+mkdir -p "$GM_PERF_DIR/chunks" "$GM_PROFILE_DIR"
+
+have_pkg() {
+  command -v qlist >/dev/null 2>&1 && qlist -IC "$1" | grep -q "^$1$"
+}
 
 resolve_bin() {
   local glob="$1"
-  # pick the newest match (helps when versioned .so changes)
-  local f
-  f=$(ls -1t $glob 2>/dev/null | head -n1 || true)
-  [[ -n "$f" ]] || return 1
-  realpath "$f" 2>/dev/null || echo "$f"
+  # First match wins
+  local m
+  for m in $glob; do
+    [[ -e "$m" ]] && { echo "$m"; return 0; }
+  done
+  return 1
 }
 
-make_sample_profile() {
-  local bin="$1" perfdata="$2" out="$3"
-  # Use extbinary sample profile (good default for -fprofile-sample-use)
-  llvm-profgen --binary="$bin" --perfdata="$perfdata" --format=extbinary --llvm-sample-profile="$out" >/dev/null 2>&1
-}
-
-merge_sample_profiles() {
-  local base="$1" add="$2"
-  if [[ -f "$base" ]]; then
-    llvm-profdata merge -sample -output="${base}.tmp" "$base" "$add" >/dev/null 2>&1
-    mv -f "${base}.tmp" "$base"
+merge_sample() {
+  local dst="$1" new="$2"
+  if [[ -f "$dst" ]]; then
+    llvm-profdata merge -sample -o "${dst}.tmp" "$dst" "$new" && mv "${dst}.tmp" "$dst"
   else
-    mv -f "$add" "$base"
+    mv "$new" "$dst"
   fi
 }
 
-try_propeller() {
-  local bin="$1" perfdata="$2" key="$3"
-  # Optional: create_llvm_prof (from AutoFDO) can emit Propeller-compatible ordering profiles.
+gen_kernel_afdo() {
+  local vmlinux="$1" perfdata="$2" out="$3"
+  # llvm-profgen can consume perf.data with LBR/branch-stack and emit extbinary sample profiles.
+  llvm-profgen --kernel --binary="$vmlinux" --perfdata="$perfdata" -o "$out"
+}
+
+gen_userspace_afdo() {
+  local bin="$1" perfdata="$2" out="$3"
+  # Prefer create_llvm_prof when present; fallback to llvm-profgen.
   if command -v create_llvm_prof >/dev/null 2>&1; then
-    local outdir="${GM_PROFILE_DIR}/${key}.propeller.d"
-    mkdir -p "$outdir"
-    create_llvm_prof --binary="$bin" --profile="$perfdata" --format=propeller --out="$outdir" >/dev/null 2>&1 || return 0
-    # Try to find a reasonable ordering file to feed lld
-    local cand
-    cand=$(ls -1 "$outdir"/*.txt 2>/dev/null | head -n1 || true)
-    if [[ -n "$cand" ]]; then
-      ln -sf "$cand" "${GM_PROFILE_DIR}/${key}.propeller.txt"
-    fi
+    create_llvm_prof --binary="$bin" --profile="$perfdata" --format=extbinary --out="$out"
+  else
+    llvm-profgen --binary="$bin" --perfdata="$perfdata" -o "$out"
   fi
 }
 
-process_one_chunk() {
-  local chunk="$1"
-  local perfdata="$chunk"
-  if [[ "$chunk" == *.zst ]]; then
-    need zstd
-    perfdata="${chunk%.zst}"
-    zstd -q -d -f "$chunk" -o "$perfdata"
-  fi
+gen_propeller() {
+  local bin="$1" perfdata="$2" out_prefix="$3"
+  command -v create_llvm_prof >/dev/null 2>&1 || return 0
+  create_llvm_prof --binary="$bin" --profile="$perfdata" --format=propeller --out="$out_prefix"
+}
 
-  local entry
-  for entry in "${GM_TARGETS[@]:-}"; do
-    IFS='|' read -r name atom binglob triggers <<<"$entry"
-    local key="${atom//\//-}"
-    local bin
-    if ! bin=$(resolve_bin "$binglob"); then
+for chunk in "$GM_PERF_DIR"/chunks/*.data; do
+  [[ -s "$chunk" ]] || continue
+
+  for entry in "${GM_TARGETS[@]}"; do
+    IFS='|' read -r name atom binary_glob _triggers <<<"$entry"
+
+    have_pkg "$atom" || continue
+
+    if ! bin=$(resolve_bin "$binary_glob"); then
       continue
     fi
 
-    local tmp
-    tmp="$(mktemp --suffix=.prof)"
-    if make_sample_profile "$bin" "$perfdata" "$tmp"; then
-      local out="${GM_PROFILE_DIR}/${key}.afdo"
-      merge_sample_profiles "$out" "$tmp"
-      log "Merged profile: $out (from $(basename "$chunk"))"
-      try_propeller "$bin" "$perfdata" "$key" || true
+    key="${atom//\//-}"
+    tmp_afdo=$(mktemp "${GM_PROFILE_DIR}/${key}.XXXXXX.afdo")
+
+    if [[ "$name" == "kernel" || "$bin" == *vmlinux ]]; then
+      gen_kernel_afdo "$bin" "$chunk" "$tmp_afdo" || { rm -f "$tmp_afdo"; continue; }
     else
-      rm -f "$tmp" || true
+      gen_userspace_afdo "$bin" "$chunk" "$tmp_afdo" || { rm -f "$tmp_afdo"; continue; }
     fi
+
+    merge_sample "${GM_PROFILE_DIR}/${key}.afdo" "$tmp_afdo"
+
+    # Propeller profiles (regenerated per chunk; no safe merging)
+    gen_propeller "$bin" "$chunk" "${GM_PROFILE_DIR}/${key}_propeller" || true
   done
 
-  # Move chunk to processed
-  mv -f "$chunk" "${GM_PERF_DIR}/processed/" || true
-  [[ "$perfdata" != "$chunk" ]] && rm -f "$perfdata" || true
-}
-
-shopt -s nullglob
-chunks=( "${GM_PERF_DIR}/chunks/"perf-*.data* )
-if [[ ${#chunks[@]} -eq 0 ]]; then
-  log "No chunks to process."
-  exit 0
-fi
-
-for c in "${chunks[@]}"; do
-  process_one_chunk "$c" || true
+  rm -f "$chunk" || true
 done
 
-log "Accumulation complete."
+exit 0

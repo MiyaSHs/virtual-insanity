@@ -25,7 +25,8 @@ gm_apply_flags() {
 
   local key="${CATEGORY}-${PN}"
   local afdo="${GM_PROFILE_DIR}/${key}.afdo"
-  local prop="${GM_PROFILE_DIR}/${key}.propeller.txt"
+  local prop_cc="${GM_PROFILE_DIR}/${key}_propeller_cc_profile.txt"
+  local prop_ld="${GM_PROFILE_DIR}/${key}_propeller_ld_profile.txt"
 
   # Baseline: high value flags for “big” targets
   # Note: -O3 is used only for targets, not globally.
@@ -43,11 +44,11 @@ gm_apply_flags() {
     extra+=" -fprofile-sample-use=${afdo}"
   fi
 
-  # Propeller (lld symbol ordering). Optional and experimental.
-  if [[ -f "$prop" ]]; then
+  # Propeller (cc+ld profiles). Optional and experimental.
+  if [[ -f "$prop_cc" && -f "$prop_ld" ]]; then
     # lld supports --symbol-ordering-file
-    export LDFLAGS="${LDFLAGS:-} -Wl,--symbol-ordering-file=${prop}"
-    extra+=" -fbasic-block-address-map -fbasic-block-sections=labels"
+    export LDFLAGS="${LDFLAGS:-} -Wl,--symbol-ordering-file=${prop_ld}"
+    extra+=" -fbasic-block-address-map -fbasic-block-sections=all -fpropeller-optimize=${prop_cc}"
   fi
 
   export CFLAGS="${CFLAGS:-} ${extra}"

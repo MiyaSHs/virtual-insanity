@@ -71,11 +71,20 @@ run() {
   save_kv GM_CFLAGS_MODE "$cflags_mode"
 
   # Kernel strategy
-  local kstrat="gentoo"
-  if ui_yesno "Kernel" "Use CachyOS-kernels overlay (cachyos-sources + tuning)?" "yes"; then
-    kstrat="cachyos"
-  fi
+  local kstrat
+  kstrat=$(ui_menu "Kernel" "Choose kernel strategy (hands-free updates)" \
+    "cachyos"    "CachyOS sources (BORE + AutoFDO + Propeller + ThinLTO; auto rebuild via timer)" \
+    "gentoo-bin" "Gentoo distribution kernel (gentoo-kernel-bin; fastest install)" \
+    "gentoo-src" "Gentoo distribution kernel (gentoo-kernel; compile)" \
+  ) || die "No kernel strategy selected."
   save_kv GM_KERNEL_STRATEGY "$kstrat"
+
+  # Optional sched-ext (scx) toggle (works best with CachyOS kernel)
+  if ui_yesno "sched_ext" "Enable sched_ext userspace scheduler (scx_lavd) when available?" "no"; then
+    save_kv GM_ENABLE_SCX "yes"
+  else
+    save_kv GM_ENABLE_SCX "no"
+  fi
 
   # Device / HHD
   local device="generic"

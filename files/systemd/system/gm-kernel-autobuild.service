@@ -1,0 +1,8 @@
+[Unit]
+Description=Golden Master: rebuild kernel if sources were updated
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gm-kernel-autobuild

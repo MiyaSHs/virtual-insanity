@@ -1,0 +1,13 @@
+[Unit]
+Description=sched_ext: scx_lavd userspace scheduler
+After=multi-user.target
+ConditionPathExists=/sys/kernel/sched_ext
+ConditionPathExists=/usr/bin/scx_lavd
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/scx_lavd
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

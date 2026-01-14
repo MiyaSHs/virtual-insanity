@@ -1,0 +1,11 @@
+[Unit]
+Description=Golden Master: periodic kernel autobuild
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=1d
+AccuracySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

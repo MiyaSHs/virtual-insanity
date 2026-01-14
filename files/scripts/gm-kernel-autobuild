@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Rebuild the kernel if /usr/src/linux points to a kernel that isn't installed.
+set -euo pipefail
+
+want_build() {
+  [[ -d /usr/src/linux ]] || return 1
+  [[ -f /usr/src/linux/.config ]] || return 1
+  local kver
+  kver=$(make -s -C /usr/src/linux kernelrelease 2>/dev/null || true)
+  [[ -n "$kver" ]] || return 1
+  [[ -f "/boot/vmlinuz-${kver}" ]] || return 0
+  # If sources were updated but the stable entry doesn't point to this version, rebuild.
+  if ! grep -q "vmlinuz-${kver}" /boot/loader/entries/gentoo.conf 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+if want_build; then
+  echo "[gm] kernel autobuild: rebuilding…" >&2
+  exec /usr/local/sbin/gm-kernel-build
+fi
+
+exit 0
