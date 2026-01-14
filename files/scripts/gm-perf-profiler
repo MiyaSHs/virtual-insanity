@@ -16,8 +16,37 @@ GM_PERF_DURATION_SEC="${GM_PERF_DURATION_SEC:-600}"
 GM_PERF_SLEEP_SEC="${GM_PERF_SLEEP_SEC:-60}"
 
 mkdir -p "$GM_PERF_DIR/chunks"
+mkdir -p "$GM_PERF_DIR/state"
 
 log() { echo "[gm-perf] $*"; }
+
+cpu_vendor() {
+  awk -F: '/^vendor_id[[:space:]]*:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null || true
+}
+
+cpu_has_flag() {
+  # flags are whitespace-separated; we match whole words
+  grep -qE "(^|[[:space:]])${1}([[:space:]]|$)" /proc/cpuinfo 2>/dev/null
+}
+
+perf_supports_pfm() {
+  perf record --help 2>&1 | grep -q -- '--pfm-events'
+}
+
+perf_supports_event() {
+  # best-effort: perf list output differs per kernel; match substring
+  perf list 2>/dev/null | grep -q "$1"
+}
+
+disable_capture() {
+  local reason="$1"
+  echo "$reason" >"$GM_PERF_DIR/state/capture_disabled.reason" 2>/dev/null || true
+  log "FDO/Propeller capture disabled: $reason"
+}
+
+clear_disable() {
+  rm -f "$GM_PERF_DIR/state/capture_disabled.reason" 2>/dev/null || true
+}
 
 triggers_any_running() {
   for entry in "${GM_TARGETS[@]:-}"; do
@@ -30,22 +59,69 @@ triggers_any_running() {
 }
 
 choose_perf_cmd() {
-  # Prefer libpfm-based portable event naming when available.
-  if perf record --help 2>&1 | grep -q -- '--pfm-events'; then
-    # Branch stacks (-b) are important for Propeller; -N avoids symbolization overhead.
-    echo "perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009"
-  else
-    # Fallback: sample cycles + LBR callchain + branch stack.
-    echo "perf record -e cycles -a -j any -g --call-graph lbr,8"
+  # For kernel AutoFDO/Propeller, Linux kernel docs specify vendor-specific
+  # perf commands and AMD feature gating (Zen3+BRS or Zen4+amd_lbr_v2). 
+  # We follow those docs and disable capture when the required path is unavailable.
+  # Intel:   perf record -e BR_INST_RETIRED.NEAR_TAKEN:k -a -N -b -c <count> ...
+  # AMD:     perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c <count> ...
+  # (We record both user+kernel when possible to benefit userspace targets too.)
+
+  local vendor
+  vendor=$(cpu_vendor)
+
+  if [[ "$vendor" == "GenuineIntel" ]]; then
+    if perf_supports_event "BR_INST_RETIRED.NEAR_TAKEN"; then
+      echo "perf record -e BR_INST_RETIRED.NEAR_TAKEN -a -N -b -c 500009"
+      return 0
+    fi
+    return 1
   fi
+
+  if [[ "$vendor" == "AuthenticAMD" ]]; then
+    # Kernel docs: supported AMD systems are Zen3 with BRS or Zen4 with amd_lbr_v2.
+    if ! cpu_has_flag "brs" && ! cpu_has_flag "amd_lbr_v2"; then
+      return 2
+    fi
+    if perf_supports_pfm; then
+      # Use libpfm event naming. Record both userspace and kernelspace samples.
+      echo "perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009"
+      return 0
+    fi
+    return 3
+  fi
+
+  # Unknown vendor (still x86): unsupported for this branch-stack pipeline.
+  return 4
 }
 
 main() {
-  local cmd
-  cmd=$(choose_perf_cmd)
-  log "Using: $cmd"
+  local cmd rc
+  cmd=""
+  if cmd=$(choose_perf_cmd); then
+    clear_disable
+    log "Using: $cmd"
+  else
+    rc=$?
+    case "$rc" in
+      1) disable_capture "Intel CPU detected but event BR_INST_RETIRED.NEAR_TAKEN not available in perf list" ;;
+      2) disable_capture "AMD CPU detected but missing required PMU flags (need Zen3+BRS or Zen4+amd_lbr_v2)" ;;
+      3) disable_capture "AMD CPU detected and supports BRS/LBR, but perf lacks --pfm-events (libpfm support missing)" ;;
+      *) disable_capture "Unsupported CPU vendor for branch-stack AutoFDO/Propeller capture (vendor_id=$(cpu_vendor))" ;;
+    esac
+  fi
 
   while true; do
+    # If capture is disabled, keep checking periodically (kernel/perf updates may enable it later).
+    if [[ -f "$GM_PERF_DIR/state/capture_disabled.reason" ]]; then
+      sleep "$GM_PERF_SLEEP_SEC"
+      # re-evaluate
+      if cmd=$(choose_perf_cmd); then
+        clear_disable
+        log "Capture path is now available. Using: $cmd"
+      fi
+      continue
+    fi
+
     if triggers_any_running; then
       local ts out
       ts=$(date +%s)

@@ -12,6 +12,13 @@ GM_PROFILE_DIR="${GM_PROFILE_DIR:-/var/lib/gm/profiles}"
 
 mkdir -p "$GM_PERF_DIR/chunks" "$GM_PROFILE_DIR"
 
+log() { echo "[gm-fdo] $*"; }
+
+if [[ -f "$GM_PERF_DIR/state/capture_disabled.reason" ]]; then
+  log "Perf capture disabled: $(cat "$GM_PERF_DIR/state/capture_disabled.reason" 2>/dev/null || true)"
+  exit 0
+fi
+
 have_pkg() {
   command -v qlist >/dev/null 2>&1 && qlist -IC "$1" | grep -q "^$1$"
 }
@@ -54,7 +61,12 @@ gen_userspace_afdo() {
 gen_propeller() {
   local bin="$1" perfdata="$2" out_prefix="$3"
   command -v create_llvm_prof >/dev/null 2>&1 || return 0
-  create_llvm_prof --binary="$bin" --profile="$perfdata" --format=propeller --out="$out_prefix"
+  # Kernel Propeller docs (and LKML reference) generate two files:
+  #   <prefix>_cc_profile.txt and <prefix>_ld_profile.txt
+  create_llvm_prof --binary="$bin" --profile="$perfdata" \
+    --format=propeller --propeller_output_module_name \
+    --out="${out_prefix}_cc_profile.txt" \
+    --propeller_symorder="${out_prefix}_ld_profile.txt"
 }
 
 for chunk in "$GM_PERF_DIR"/chunks/*.data; do
