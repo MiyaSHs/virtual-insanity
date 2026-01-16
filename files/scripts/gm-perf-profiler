@@ -12,11 +12,20 @@ CONF="/etc/gm-fdo-targets.conf"
 source "$CONF"
 
 GM_PERF_DIR="${GM_PERF_DIR:-/var/lib/gm/perf}"
-GM_PERF_DURATION_SEC="${GM_PERF_DURATION_SEC:-600}"
-GM_PERF_SLEEP_SEC="${GM_PERF_SLEEP_SEC:-60}"
 
-mkdir -p "$GM_PERF_DIR/chunks"
-mkdir -p "$GM_PERF_DIR/state"
+# Settings (from /etc/gm-fdo-targets.conf)
+GM_PERF_DURATION_SEC="${GM_PERF_DURATION_SEC:-60}"
+GM_PERF_IDLE_SEC="${GM_PERF_IDLE_SEC:-20}"
+
+# Backward-compat: older configs used GM_PERF_SLEEP_SEC
+if [[ -n "${GM_PERF_SLEEP_SEC:-}" ]]; then
+  GM_PERF_IDLE_SEC="${GM_PERF_SLEEP_SEC}"
+fi
+
+# Sample period for -c (prime to avoid sync). Can be overridden by env.
+GM_PERF_PERIOD="${GM_PERF_PERIOD:-500009}"
+
+mkdir -p "$GM_PERF_DIR/chunks" "$GM_PERF_DIR/state"
 
 log() { echo "[gm-perf] $*"; }
 
@@ -48,11 +57,26 @@ clear_disable() {
   rm -f "$GM_PERF_DIR/state/capture_disabled.reason" 2>/dev/null || true
 }
 
+trigger_is_running() {
+  local pat="$1"
+  [[ -n "$pat" ]] || return 1
+
+  # gm-fdo-targets.conf documents triggers as "pgrep -f patterns".
+  # We keep it robust:
+  #  - Try exact name match first for simple tokens (steam, gamescope, java, firefox)
+  #  - Fall back to -f for anything that needs cmdline matching (minecraft, java args, etc.)
+  if [[ "$pat" =~ [\.\*\+\?\[\]\(\)\|\^\\/] ]]; then
+    pgrep -f -- "$pat" >/dev/null 2>&1
+  else
+    pgrep -x -- "$pat" >/dev/null 2>&1 || pgrep -f -- "$pat" >/dev/null 2>&1
+  fi
+}
+
 triggers_any_running() {
   for entry in "${GM_TARGETS[@]:-}"; do
     IFS='|' read -r _name _atom _glob triggers <<<"$entry"
     for t in $triggers; do
-      pgrep -x "$t" >/dev/null 2>&1 && return 0
+      trigger_is_running "$t" && return 0
     done
   done
   return 1
@@ -60,18 +84,19 @@ triggers_any_running() {
 
 choose_perf_cmd() {
   # For kernel AutoFDO/Propeller, Linux kernel docs specify vendor-specific
-  # perf commands and AMD feature gating (Zen3+BRS or Zen4+amd_lbr_v2). 
+  # perf commands and AMD feature gating (Zen3+BRS or Zen4+amd_lbr_v2).
   # We follow those docs and disable capture when the required path is unavailable.
-  # Intel:   perf record -e BR_INST_RETIRED.NEAR_TAKEN:k -a -N -b -c <count> ...
-  # AMD:     perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c <count> ...
-  # (We record both user+kernel when possible to benefit userspace targets too.)
+  # Intel:   perf record -e BR_INST_RETIRED.NEAR_TAKEN -a -N -b -c <count> ...
+  # AMD:     perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,k -a -N -b -c <count> ...
+  #
+  # Note: we record system-wide (-a) to cover user+kernel interactions for the gaming stack.
 
   local vendor
   vendor=$(cpu_vendor)
 
   if [[ "$vendor" == "GenuineIntel" ]]; then
     if perf_supports_event "BR_INST_RETIRED.NEAR_TAKEN"; then
-      echo "perf record -e BR_INST_RETIRED.NEAR_TAKEN -a -N -b -c 500009"
+      echo "perf record -e BR_INST_RETIRED.NEAR_TAKEN -a -N -b -c ${GM_PERF_PERIOD}"
       return 0
     fi
     return 1
@@ -84,7 +109,7 @@ choose_perf_cmd() {
     fi
     if perf_supports_pfm; then
       # Use libpfm event naming. Record both userspace and kernelspace samples.
-      echo "perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009"
+      echo "perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c ${GM_PERF_PERIOD}"
       return 0
     fi
     return 3
@@ -113,8 +138,7 @@ main() {
   while true; do
     # If capture is disabled, keep checking periodically (kernel/perf updates may enable it later).
     if [[ -f "$GM_PERF_DIR/state/capture_disabled.reason" ]]; then
-      sleep "$GM_PERF_SLEEP_SEC"
-      # re-evaluate
+      sleep "$GM_PERF_IDLE_SEC"
       if cmd=$(choose_perf_cmd); then
         clear_disable
         log "Capture path is now available. Using: $cmd"
@@ -126,15 +150,15 @@ main() {
       local ts out
       ts=$(date +%s)
       out="$GM_PERF_DIR/chunks/chunk_${ts}.data"
-      log "Triggers active; recording $GM_PERF_DURATION_SEC s -> $out"
+      log "Triggers active; recording ${GM_PERF_DURATION_SEC}s -> $out"
       # shellcheck disable=SC2086
       $cmd -o "$out" -- sleep "$GM_PERF_DURATION_SEC" || {
         rm -f "$out" 2>/dev/null || true
         log "perf failed; will retry"
       }
-      sleep "$GM_PERF_SLEEP_SEC"
+      sleep "$GM_PERF_IDLE_SEC"
     else
-      sleep "$GM_PERF_SLEEP_SEC"
+      sleep "$GM_PERF_IDLE_SEC"
     fi
   done
 }
