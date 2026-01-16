@@ -4,12 +4,18 @@ source "$GM_ROOT_DIR/lib/common.sh"
 
 install_units() {
   install -Dm644 "$GM_ROOT_DIR/files/systemd/system/gm-perf-profiler.service" /etc/systemd/system/gm-perf-profiler.service
+  install -Dm644 "$GM_ROOT_DIR/files/systemd/system/gm-perf-profiler.timer" /etc/systemd/system/gm-perf-profiler.timer
+
   install -Dm644 "$GM_ROOT_DIR/files/systemd/system/gm-fdo-accumulate.service" /etc/systemd/system/gm-fdo-accumulate.service
   install -Dm644 "$GM_ROOT_DIR/files/systemd/system/gm-fdo-accumulate.timer" /etc/systemd/system/gm-fdo-accumulate.timer
 
   systemctl daemon-reload || true
-  systemctl enable gm-perf-profiler.service || true
-  systemctl enable gm-fdo-accumulate.timer || true
+
+  # Prefer the timer to start the long-running sampler (service has Restart=always).
+  systemctl disable gm-perf-profiler.service >/dev/null 2>&1 || true
+  systemctl enable gm-perf-profiler.timer >/dev/null 2>&1 || true
+
+  systemctl enable gm-fdo-accumulate.timer >/dev/null 2>&1 || true
 }
 
 install_scripts() {
