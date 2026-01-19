@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Process-aware trigger, system-wide capture:
-# When any "trigger" process is running, we record a short perf chunk with
-# branch stacks so llvm-profgen/create_llvm_prof can build AutoFDO/Propeller profiles.
+# Trigger-aware perf sampler for AutoFDO/Propeller pipelines.
+# - Reads targets + triggers from /etc/gm-fdo-targets.conf
+# - Records short system-wide chunks ONLY when trigger processes exist
+# - Prefers branch-stack capture (best for sample-PGO + Propeller)
+# - Falls back gracefully when the ideal event path is unavailable
 
 CONF="/etc/gm-fdo-targets.conf"
 [[ -f "$CONF" ]] || { echo "Missing $CONF" >&2; exit 1; }
@@ -12,6 +14,7 @@ CONF="/etc/gm-fdo-targets.conf"
 source "$CONF"
 
 GM_PERF_DIR="${GM_PERF_DIR:-/var/lib/gm/perf}"
+mkdir -p "$GM_PERF_DIR/chunks" "$GM_PERF_DIR/state"
 
 # Settings (from /etc/gm-fdo-targets.conf)
 GM_PERF_DURATION_SEC="${GM_PERF_DURATION_SEC:-60}"
@@ -22,10 +25,8 @@ if [[ -n "${GM_PERF_SLEEP_SEC:-}" ]]; then
   GM_PERF_IDLE_SEC="${GM_PERF_SLEEP_SEC}"
 fi
 
-# Sample period for -c (prime to avoid sync). Can be overridden by env.
+# Sample period (-c). Prime avoids sync with other timers.
 GM_PERF_PERIOD="${GM_PERF_PERIOD:-500009}"
-
-mkdir -p "$GM_PERF_DIR/chunks" "$GM_PERF_DIR/state"
 
 log() { echo "[gm-perf] $*"; }
 
@@ -34,7 +35,6 @@ cpu_vendor() {
 }
 
 cpu_has_flag() {
-  # flags are whitespace-separated; we match whole words
   grep -qE "(^|[[:space:]])${1}([[:space:]]|$)" /proc/cpuinfo 2>/dev/null
 }
 
@@ -42,15 +42,14 @@ perf_supports_pfm() {
   perf record --help 2>&1 | grep -q -- '--pfm-events'
 }
 
-perf_supports_event() {
-  # best-effort: perf list output differs per kernel; match substring
+perf_supports_event_substr() {
   perf list 2>/dev/null | grep -q "$1"
 }
 
 disable_capture() {
   local reason="$1"
   echo "$reason" >"$GM_PERF_DIR/state/capture_disabled.reason" 2>/dev/null || true
-  log "FDO/Propeller capture disabled: $reason"
+  log "Capture disabled: $reason"
 }
 
 clear_disable() {
@@ -61,10 +60,10 @@ trigger_is_running() {
   local pat="$1"
   [[ -n "$pat" ]] || return 1
 
-  # gm-fdo-targets.conf documents triggers as "pgrep -f patterns".
-  # We keep it robust:
-  #  - Try exact name match first for simple tokens (steam, gamescope, java, firefox)
-  #  - Fall back to -f for anything that needs cmdline matching (minecraft, java args, etc.)
+  # Your gm-fdo-targets.conf documents triggers as "pgrep -f patterns".
+  # We make it robust:
+  # - If pattern contains regex-ish characters or slashes, use -f
+  # - Otherwise try -x (exact name) first, then -f
   if [[ "$pat" =~ [\.\*\+\?\[\]\(\)\|\^\\/] ]]; then
     pgrep -f -- "$pat" >/dev/null 2>&1
   else
@@ -73,6 +72,8 @@ trigger_is_running() {
 }
 
 triggers_any_running() {
+  # GM_TARGETS is defined in /etc/gm-fdo-targets.conf as an array of:
+  # name|atom|binary_glob|trigger1 trigger2 ...
   for entry in "${GM_TARGETS[@]:-}"; do
     IFS='|' read -r _name _atom _glob triggers <<<"$entry"
     for t in $triggers; do
@@ -83,79 +84,67 @@ triggers_any_running() {
 }
 
 choose_perf_cmd() {
-  # For kernel AutoFDO/Propeller, Linux kernel docs specify vendor-specific
-  # perf commands and AMD feature gating (Zen3+BRS or Zen4+amd_lbr_v2).
-  # We follow those docs and disable capture when the required path is unavailable.
-  # Intel:   perf record -e BR_INST_RETIRED.NEAR_TAKEN -a -N -b -c <count> ...
-  # AMD:     perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,k -a -N -b -c <count> ...
-  #
-  # Note: we record system-wide (-a) to cover user+kernel interactions for the gaming stack.
+  # Prefer branch-stack capture (best for AutoFDO + Propeller)
+  # AMD (Zen3+BRS or Zen4+amd_lbr_v2): use libpfm event if available
+  # Intel: use BR_INST_RETIRED.NEAR_TAKEN if available
+  # Fallback: cycles (still useful for sample profiles; Propeller quality lower)
 
   local vendor
   vendor=$(cpu_vendor)
 
   if [[ "$vendor" == "GenuineIntel" ]]; then
-    if perf_supports_event "BR_INST_RETIRED.NEAR_TAKEN"; then
+    if perf_supports_event_substr "BR_INST_RETIRED.NEAR_TAKEN"; then
       echo "perf record -e BR_INST_RETIRED.NEAR_TAKEN -a -N -b -c ${GM_PERF_PERIOD}"
       return 0
     fi
-    return 1
+    # fallback
+    echo "perf record -e cycles -a -N -c ${GM_PERF_PERIOD}"
+    return 0
   fi
 
   if [[ "$vendor" == "AuthenticAMD" ]]; then
-    # Kernel docs: supported AMD systems are Zen3 with BRS or Zen4 with amd_lbr_v2.
+    # If neither flag exists, branch-stack path likely unsupported on this CPU/kernel.
     if ! cpu_has_flag "brs" && ! cpu_has_flag "amd_lbr_v2"; then
-      return 2
+      # fallback
+      echo "perf record -e cycles -a -N -c ${GM_PERF_PERIOD}"
+      return 0
     fi
+
     if perf_supports_pfm; then
-      # Use libpfm event naming. Record both userspace and kernelspace samples.
+      # Record both user+kernel branch events via libpfm
       echo "perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:u,RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c ${GM_PERF_PERIOD}"
       return 0
     fi
-    return 3
+
+    # fallback if pfm missing
+    echo "perf record -e cycles -a -N -c ${GM_PERF_PERIOD}"
+    return 0
   fi
 
-  # Unknown vendor (still x86): unsupported for this branch-stack pipeline.
-  return 4
+  # Unknown vendor: fallback
+  echo "perf record -e cycles -a -N -c ${GM_PERF_PERIOD}"
+  return 0
 }
 
 main() {
-  local cmd rc
-  cmd=""
-  if cmd=$(choose_perf_cmd); then
-    clear_disable
-    log "Using: $cmd"
-  else
-    rc=$?
-    case "$rc" in
-      1) disable_capture "Intel CPU detected but event BR_INST_RETIRED.NEAR_TAKEN not available in perf list" ;;
-      2) disable_capture "AMD CPU detected but missing required PMU flags (need Zen3+BRS or Zen4+amd_lbr_v2)" ;;
-      3) disable_capture "AMD CPU detected and supports BRS/LBR, but perf lacks --pfm-events (libpfm support missing)" ;;
-      *) disable_capture "Unsupported CPU vendor for branch-stack AutoFDO/Propeller capture (vendor_id=$(cpu_vendor))" ;;
-    esac
-  fi
+  local cmd
+  cmd=$(choose_perf_cmd)
+  clear_disable
+  log "Using: $cmd"
 
   while true; do
-    # If capture is disabled, keep checking periodically (kernel/perf updates may enable it later).
-    if [[ -f "$GM_PERF_DIR/state/capture_disabled.reason" ]]; then
-      sleep "$GM_PERF_IDLE_SEC"
-      if cmd=$(choose_perf_cmd); then
-        clear_disable
-        log "Capture path is now available. Using: $cmd"
-      fi
-      continue
-    fi
-
     if triggers_any_running; then
       local ts out
       ts=$(date +%s)
       out="$GM_PERF_DIR/chunks/chunk_${ts}.data"
       log "Triggers active; recording ${GM_PERF_DURATION_SEC}s -> $out"
+
       # shellcheck disable=SC2086
-      $cmd -o "$out" -- sleep "$GM_PERF_DURATION_SEC" || {
+      if ! $cmd -o "$out" -- sleep "$GM_PERF_DURATION_SEC"; then
         rm -f "$out" 2>/dev/null || true
         log "perf failed; will retry"
-      }
+      fi
+
       sleep "$GM_PERF_IDLE_SEC"
     else
       sleep "$GM_PERF_IDLE_SEC"
