@@ -11,10 +11,9 @@ install_units() {
 
   systemctl daemon-reload || true
 
-  # Prefer the timer to start the long-running sampler (service has Restart=always).
+  # Start/stop policy should be driven by timers.
   systemctl disable gm-perf-profiler.service >/dev/null 2>&1 || true
-  systemctl enable gm-perf-profiler.timer >/dev/null 2>&1 || true
-
+  systemctl enable gm-perf-profiler.timer  >/dev/null 2>&1 || true
   systemctl enable gm-fdo-accumulate.timer >/dev/null 2>&1 || true
 }
 
@@ -23,9 +22,11 @@ install_scripts() {
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-fdo-accumulate" /usr/local/bin/gm-fdo-accumulate
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-optimize" /usr/local/bin/gm-optimize
   install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-portage-env-apply" /usr/local/bin/gm-portage-env-apply
+
   if [[ "${GM_ENABLE_JAVA:-no}" == "yes" ]]; then
     install -Dm755 "$GM_ROOT_DIR/files/scripts/gm-java-tune" /usr/local/bin/gm-java-tune
   fi
+
   install -Dm644 "$GM_ROOT_DIR/files/scripts/gm-fdo-targets.conf" /etc/gm-fdo-targets.conf
 }
 
@@ -41,11 +42,12 @@ run() {
 
   log "Setting up perf → sample-PGO (AutoFDO-style) + optional Propeller…"
 
-  # perf tool
+  # perf tool (most Gentoo systems provide it via linux-tools)
   emerge --quiet-build=y sys-kernel/linux-tools || true
 
-  # ensure llvm tools exist (already installed)
-  emerge --quiet-build=y sys-devel/llvm || true
+  # LLVM toolchain (prefer modern split; fall back if needed)
+  emerge --quiet-build=y llvm-core/llvm llvm-core/clang llvm-core/lld >/dev/null 2>&1 || \
+    emerge --quiet-build=y sys-devel/llvm sys-devel/clang sys-devel/lld || true
 
   # profile storage
   mkdir -p /var/lib/gm/perf/chunks /var/lib/gm/profiles
@@ -55,10 +57,10 @@ run() {
   install_units
   install_portage_hooks
 
-  # Build portage env mapping
+  # Build portage env mapping (package.env / env snippets)
   /usr/local/bin/gm-portage-env-apply || true
 
-  # Ensure Java tuning block exists if Java is installed
+  # Apply Java tuning if installed/enabled
   if command -v gm-java-tune >/dev/null 2>&1; then
     gm-java-tune || true
   fi
